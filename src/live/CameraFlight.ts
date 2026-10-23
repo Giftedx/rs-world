@@ -1,6 +1,8 @@
 import { Camera } from "../mapviewer/Camera";
 
 // Camera flight between two followed players, so a follow change never cuts to an unloaded (black) area.
+//   prep:    hold still until every square around the start (render distance) is drawn: rising and tilting
+//            shows squares that were outside the old view.
 //   rise:    climb over the current spot (its map squares are loaded) and tilt down.
 //   wait:    hover there, slowly turning, until the destination squares (and, for a short hop, the squares on
 //            the way) are loaded. Capped, so a stuck loader cannot hold the camera forever.
@@ -20,14 +22,15 @@ type Pose = { x: number; y: number; z: number; yaw: number; pitch: number };
 const RS_TO_RADIANS = Math.PI / 1024;
 const RISE_MS = 600;
 const WAIT_MAX_MS = 9000;
+const PREP_MAX_MS = 3000;
 const WARP_MS = 420;
 const DESCEND_MS = 900;
-const GLIDE_MAX = 192;
+const GLIDE_MAX = 64;
 // Height of the flight above the ground (camera Y grows downward: negative is up), and the pitch on the way.
 const HIGH = 34;
 const HIGH_PITCH = -430;
-// Squares loaded around the destination before the camera comes down.
-const DEST_RADIUS = 40;
+// Squares loaded around both ends: the whole render distance, capped.
+const MAX_RADIUS = 128;
 
 const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
@@ -38,7 +41,7 @@ const lerpYaw = (a: number, b: number, t: number) => {
 };
 
 export class CameraFlight {
-    private phase: "rise" | "wait" | "glide" | "warp" | "descend" = "rise";
+    private phase: "prep" | "rise" | "wait" | "glide" | "warp" | "descend" = "prep";
     private phaseStart: number;
     private readonly from: Pose;
     private high: Pose;
@@ -49,6 +52,11 @@ export class CameraFlight {
     readonly distance: number;
     readonly glide: boolean;
     done = false;
+
+    // True while the camera moves (not while it holds for loading at the start or at height).
+    get moving(): boolean {
+        return this.phase !== "prep" && this.phase !== "wait";
+    }
 
     constructor(
         camera: Camera,
@@ -83,21 +91,27 @@ export class CameraFlight {
     }
 
     // Moves the camera for this frame. Returns true when the flight has ended.
-    step(camera: Camera, maps: MapAccess | undefined): boolean {
+    step(camera: Camera, maps: MapAccess | undefined, renderDistance: number): boolean {
+        // Plus a margin: the camera's loading box moves with it (the high points sit ~20 tiles off the target).
+        const R = Math.min(MAX_RADIUS, renderDistance) + 32;
         const now = performance.now();
         const t = (ms: number) => Math.min(1, (now - this.phaseStart) / ms);
         const next = (p: typeof this.phase) => {
             this.phase = p;
             this.phaseStart = now;
         };
-        maps?.prefetch(this.toX, this.toZ, DEST_RADIUS);
-        if (this.glide) maps?.prefetch((this.from.x + this.toX) / 2, (this.from.z + this.toZ) / 2, this.distance / 2 + 24);
-        const destReady = () =>
-            !maps ||
-            (maps.ready(this.toX, this.toZ, DEST_RADIUS) &&
-                (!this.glide || maps.ready((this.from.x + this.toX) / 2, (this.from.z + this.toZ) / 2, this.distance / 2 + 24)));
+        const midX = (this.from.x + this.toX) / 2, midZ = (this.from.z + this.toZ) / 2, midR = this.distance / 2 + R;
+        if (this.phase === "prep" || this.phase === "rise") maps?.prefetch(this.from.x, this.from.z, R);
+        maps?.prefetch(this.toX, this.toZ, R);
+        if (this.glide) maps?.prefetch(midX, midZ, midR);
+        const destReady = () => !maps || (maps.ready(this.toX, this.toZ, R) && (!this.glide || maps.ready(midX, midZ, midR)));
 
         switch (this.phase) {
+            case "prep": {
+                this.apply(camera, this.from);
+                if (!maps || maps.ready(this.from.x, this.from.z, R) || now - this.phaseStart > PREP_MAX_MS) next("rise");
+                break;
+            }
             case "rise": {
                 const k = ease(t(RISE_MS));
                 this.apply(camera, this.mix(this.from, this.high, k));
@@ -105,11 +119,8 @@ export class CameraFlight {
                 break;
             }
             case "wait": {
-                // Turn slowly while the destination loads, so the frame is alive and never black.
-                this.high = { ...this.high, yaw: (this.high.yaw + 0.6) % 2048 };
-                this.highDest.yaw = this.high.yaw;
-                this.end.yaw = this.high.yaw;
-                this.recomputeEnd();
+                // Hold still while the destination loads: turning would show squares outside the loaded set.
+                maps?.prefetch(this.from.x, this.from.z, R);
                 this.apply(camera, this.high);
                 if (destReady() || now - this.phaseStart > WAIT_MAX_MS) next(this.glide ? "glide" : "warp");
                 break;
@@ -155,16 +166,6 @@ export class CameraFlight {
     cancel(): void {
         if (this.canvas) this.canvas.style.filter = "";
         this.done = true;
-    }
-
-    private recomputeEnd(): void {
-        const yaw = (this.end.yaw - 1024) * RS_TO_RADIANS;
-        const pitch = this.end.pitch * RS_TO_RADIANS;
-        const d = Math.hypot(this.end.x - this.toX, this.end.z - this.toZ) / Math.max(0.001, Math.cos(pitch));
-        this.end.x = this.toX + Math.cos(pitch) * Math.sin(yaw) * d;
-        this.end.z = this.toZ + Math.cos(pitch) * Math.cos(yaw) * d;
-        this.highDest.x = this.toX + (this.end.x - this.toX) * 1.6;
-        this.highDest.z = this.toZ + (this.end.z - this.toZ) * 1.6;
     }
 
     private mix(a: Pose, b: Pose, k: number): Pose {

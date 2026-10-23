@@ -11,12 +11,12 @@ export const EMBED = params.get("embed") === "1";
 // ?flight=0 restores the old instant jump (kept to measure against).
 export const FLIGHT = params.get("flight") !== "0";
 // ?cache=0 drops the recently-visited square cache (the old behaviour), to measure against.
-export const SQUARE_CACHE = params.get("cache") === "0" ? 0 : 64;
+export const SQUARE_CACHE = params.get("cache") === "0" ? 0 : 160;
 
 // Reports how long a follow change took until the destination was fully loaded (the embedding page shows it).
 // ms: from the follow change until no square in view is blank. blankFrames: frames in between that showed any.
-export function postTiming(mode: "flight" | "snap", ms: number, tiles: number, frames: number, blankFrames: number): void {
-    if (window.parent !== window) window.parent.postMessage({ viewerTiming: { mode, ms: Math.round(ms), tiles: Math.round(tiles), frames, blankFrames } }, "*");
+export function postTiming(mode: "flight" | "snap", ms: number, tiles: number, frames: number, blankFrames: number, holdFrames: number): void {
+    if (window.parent !== window) window.parent.postMessage({ viewerTiming: { mode, ms: Math.round(ms), tiles: Math.round(tiles), frames, blankFrames, holdFrames } }, "*");
 }
 export const MAIN_MARK = "⟦MAIN⟧";
 

@@ -50,6 +50,7 @@ export class MapManager<T extends MapSquare> {
     cacheBudget: number = 64;
     // Squares in view this frame that are not loaded yet: they draw as blank (black) ground.
     blankOnScreen: number = 0;
+    private frameCount: number = 0;
     private lastUsed: Map<number, number> = new Map();
     private useClock: number = 0;
 
@@ -133,9 +134,9 @@ export class MapManager<T extends MapSquare> {
         }
     }
 
-    // True when every existing square around a tile is loaded.
+    // True when every existing square around a tile is loaded and past its first-frames upload delay.
     ready(tileX: number, tileZ: number, radiusTiles: number): boolean {
-        return this.squaresAround(tileX, tileZ, radiusTiles).every((id) => this.mapSquares.has(id));
+        return this.squaresAround(tileX, tileZ, radiusTiles).every((id) => this.mapSquares.get(id)?.canRender(this.frameCount) ?? false);
     }
 
     private squaresAround(tileX: number, tileZ: number, radiusTiles: number): number[] {
@@ -191,6 +192,7 @@ export class MapManager<T extends MapSquare> {
     ): void {
         const cameraX = camera.getPosX();
         const cameraZ = camera.getPosZ();
+        this.frameCount = frameCount;
 
         // Calculate which map square id to start and end on based on camera location and render distance (in tiles).
         const mapStartX = Math.floor((cameraX - renderDistance) / Scene.MAP_SQUARE_SIZE);

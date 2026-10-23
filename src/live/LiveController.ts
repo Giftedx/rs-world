@@ -85,7 +85,7 @@ export class LiveController {
     canvas?: HTMLElement;
     // ?flight=0: time from a follow change until the destination squares are loaded.
     // A follow change being timed: until the flight has landed (or the jump is done) and nothing in view is blank.
-    private timing?: { mode: "flight" | "snap"; start: number; tiles: number; frames: number; blankFrames: number };
+    private timing?: { mode: "flight" | "snap"; start: number; tiles: number; frames: number; blankFrames: number; holdFrames: number };
 
     // Bumped on any change the UI should re-render for.
     version: number = 0;
@@ -176,7 +176,7 @@ export class LiveController {
         }
 
         if (this.flight) {
-            if (this.flight.step(camera, this.maps)) {
+            if (this.flight.step(camera, this.maps, renderDistance)) {
                 this.flight = undefined;
                 this.orbitDistance = EMBED ? EMBED_FOLLOW_DISTANCE : FOLLOW_DISTANCE;
             }
@@ -187,10 +187,12 @@ export class LiveController {
         if (tm && this.maps) {
             tm.frames++;
             const blank = this.maps.blankOnScreen > 0;
-            if (blank) tm.blankFrames++;
+            // A flight holding still for loading shows the old view; only frames while moving count as its blanks.
+            if (this.flight && !this.flight.moving) tm.holdFrames++;
+            else if (blank) tm.blankFrames++;
             // The map manager counts blanks for the previous camera; give it 3 frames after the move.
             if (!this.flight && tm.frames > 3 && !blank) {
-                postTiming(tm.mode, performance.now() - tm.start, tm.tiles, tm.frames, tm.blankFrames);
+                postTiming(tm.mode, performance.now() - tm.start, tm.tiles, tm.frames, tm.blankFrames, tm.holdFrames);
                 this.timing = undefined;
             }
         }
@@ -232,7 +234,7 @@ export class LiveController {
         if (target && FLIGHT && this.followName !== undefined && this.followName.toLowerCase() !== name.toLowerCase()) {
             this.flight?.cancel();
             this.flight = new CameraFlight(camera, target.x, target.z, EMBED ? EMBED_FOLLOW_DISTANCE : FOLLOW_DISTANCE, EMBED ? EMBED_FOLLOW_PITCH : FOLLOW_PITCH, this.canvas);
-            this.timing = { mode: "flight", start: performance.now(), tiles: this.flight.distance, frames: 0, blankFrames: 0 };
+            this.timing = { mode: "flight", start: performance.now(), tiles: this.flight.distance, frames: 0, blankFrames: 0, holdFrames: 0 };
             this.followName = name;
             this.followSlot = -1;
             this.lastRosterJumpTick = this.world.rosterTick;
@@ -240,7 +242,7 @@ export class LiveController {
             return;
         }
         if (target && this.followName !== undefined) {
-            this.timing = { mode: "snap", start: performance.now(), tiles: Math.hypot(target.x - camera.getPosX(), target.z - camera.getPosZ()), frames: 0, blankFrames: 0 };
+            this.timing = { mode: "snap", start: performance.now(), tiles: Math.hypot(target.x - camera.getPosX(), target.z - camera.getPosZ()), frames: 0, blankFrames: 0, holdFrames: 0 };
         }
         if (visible) {
             this.flyTo(camera, visible.x / 128, visible.z / 128);
