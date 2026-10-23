@@ -70,6 +70,27 @@ if (from) {
         });
 }
 
+// ?highlightFrom=<url> (a JSON array, fetched with CORS): players drawn with a gold nameplate.
+const highlighted = new Set<string>();
+const hl = params.get("highlightFrom");
+if (hl) {
+    fetch(hl, { mode: "cors", cache: "no-store" })
+        .then((r) => r.json())
+        .then((list: unknown) => {
+            if (Array.isArray(list))
+                for (const n of list)
+                    if (typeof n === "string" && n) highlighted.add(n.toLowerCase());
+        })
+        .catch(() => {
+            /* no highlight */
+        });
+}
+export function isNameHighlighted(name: string | undefined): boolean {
+    return !!name && highlighted.has(name.toLowerCase());
+}
+// In embed mode other players' names are dimmed, so ours stand out.
+export const OTHER_NAME_ALPHA = EMBED ? 0.45 : 1;
+
 export function isNameHidden(name: string | undefined): boolean {
     return !!name && hidden.has(name.toLowerCase());
 }

@@ -65,7 +65,8 @@ export class LiveController {
         showNpcs: true,
         showPlayerNames: true,
         showNpcNames: false,
-        showChat: true,
+        // Chat bubbles are noise in a small embedded frame.
+        showChat: !EMBED,
         showCombat: true,
     };
 
