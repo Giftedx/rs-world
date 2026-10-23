@@ -1,3 +1,4 @@
+import { SQUARE_CACHE } from "../../live/embed";
 import Denque from "denque";
 import { vec2, vec4 } from "gl-matrix";
 import { folder } from "leva";
@@ -1106,6 +1107,9 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                 live.world,
             );
         }
+        this.mapManager.cacheBudget = SQUARE_CACHE;
+        live.maps = this.mapManager;
+        live.canvas = this.canvas;
         live.update(
             clientTicksElapsed,
             this.mapViewer.camera,

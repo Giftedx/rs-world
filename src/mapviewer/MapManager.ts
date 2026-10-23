@@ -45,6 +45,14 @@ export class MapManager<T extends MapSquare> {
 
     mapSquares: Map<number, T> = new Map();
 
+    // Recently used map squares stay loaded (least recently used go first) up to this many, so flying back to a
+    // place is instant. The squares in view never count against it.
+    cacheBudget: number = 64;
+    // Squares in view this frame that are not loaded yet: they draw as blank (black) ground.
+    blankOnScreen: number = 0;
+    private lastUsed: Map<number, number> = new Map();
+    private useClock: number = 0;
+
     constructor(
         readonly maxQueuedTasks: number,
         readonly loadMapFunction: LoadMapFunction,
@@ -112,6 +120,37 @@ export class MapManager<T extends MapSquare> {
         this.loadingMapIds.delete(mapId);
         this.invalidMapIds.delete(mapId);
         this.mapSquares.set(mapId, mapSquare);
+        this.lastUsed.set(mapId, ++this.useClock);
+    }
+
+    // Loads the squares around a tile ahead of the camera (a flight's destination), nearest first.
+    prefetch(tileX: number, tileZ: number, radiusTiles: number): void {
+        const ids = this.squaresAround(tileX, tileZ, radiusTiles);
+        ids.sort((a, b) => getMapDistance(tileX, tileZ, a >> 8, a & 0xff) - getMapDistance(tileX, tileZ, b >> 8, b & 0xff));
+        for (const id of ids) {
+            if (this.mapSquares.has(id)) this.lastUsed.set(id, ++this.useClock);
+            else this.loadMap(id >> 8, id & 0xff);
+        }
+    }
+
+    // True when every existing square around a tile is loaded.
+    ready(tileX: number, tileZ: number, radiusTiles: number): boolean {
+        return this.squaresAround(tileX, tileZ, radiusTiles).every((id) => this.mapSquares.has(id));
+    }
+
+    private squaresAround(tileX: number, tileZ: number, radiusTiles: number): number[] {
+        const ids: number[] = [];
+        const x0 = Math.max(0, Math.floor((tileX - radiusTiles) / Scene.MAP_SQUARE_SIZE));
+        const x1 = Math.min(MapManager.MAX_MAP_X - 1, Math.floor((tileX + radiusTiles) / Scene.MAP_SQUARE_SIZE));
+        const y0 = Math.max(0, Math.floor((tileZ - radiusTiles) / Scene.MAP_SQUARE_SIZE));
+        const y1 = Math.min(MapManager.MAX_MAP_Y - 1, Math.floor((tileZ + radiusTiles) / Scene.MAP_SQUARE_SIZE));
+        for (let x = x0; x <= x1; x++) {
+            for (let y = y0; y <= y1; y++) {
+                const id = getMapSquareId(x, y);
+                if (!this.invalidMapIds.has(id)) ids.push(id);
+            }
+        }
+        return ids;
     }
 
     removeMap(mapX: number, mapY: number): void {
@@ -186,7 +225,9 @@ export class MapManager<T extends MapSquare> {
             // Calculate which map squares to unload based on the unload distance and remove them.
             // Unload distance is the distance in number of map squares.
 
-            for (const map of this.mapSquares.values()) {
+            // Out-of-range squares are kept while the cache has room; beyond it the least recently used go.
+            const out: number[] = [];
+            for (const [id, map] of this.mapSquares) {
                 const { mapX, mapY } = map;
                 if (
                     mapX < mapStartX - unloadDistance ||
@@ -194,7 +235,15 @@ export class MapManager<T extends MapSquare> {
                     mapY < mapStartY - unloadDistance ||
                     mapY > mapEndY + unloadDistance
                 ) {
-                    this.removeMap(mapX, mapY);
+                    out.push(id);
+                }
+            }
+            const excess = this.mapSquares.size - Math.max(this.cacheBudget, this.mapSquares.size - out.length);
+            if (excess > 0) {
+                out.sort((a, b) => (this.lastUsed.get(a) ?? 0) - (this.lastUsed.get(b) ?? 0));
+                for (const id of out.slice(0, excess)) {
+                    this.removeMap(id >> 8, id & 0xff);
+                    this.lastUsed.delete(id);
                 }
             }
         }
@@ -211,6 +260,7 @@ export class MapManager<T extends MapSquare> {
         }
 
         this.visibleMapCount = 0;
+        this.blankOnScreen = 0;
         for (let i = 0; i < this.renderDistMapCount; i++) {
             const mapId = this.renderDistMapIds[i];
             const mapX = mapId >> 8;
@@ -220,10 +270,14 @@ export class MapManager<T extends MapSquare> {
             }
             const mapSquare = this.mapSquares.get(mapId);
             if (mapSquare) {
+                this.lastUsed.set(mapId, ++this.useClock);
                 if (mapSquare.canRender(frameCount)) {
                     this.visibleMaps[this.visibleMapCount++] = mapSquare;
+                } else {
+                    this.blankOnScreen++;
                 }
             } else {
+                this.blankOnScreen++;
                 this.loadMap(mapX, mapY);
             }
         }

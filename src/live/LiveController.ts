@@ -10,7 +10,8 @@ import { LiveWorld } from "./LiveWorld";
 import { FeedStatus, WorldFeedClient } from "./WorldFeedClient";
 import { WorldState } from "./WorldState";
 import { RosterPlayer } from "./protocol";
-import { EMBED, EMBED_FOLLOW_DISTANCE, EMBED_FOLLOW_PITCH, resolveFollow } from "./embed";
+import { EMBED, EMBED_FOLLOW_DISTANCE, EMBED_FOLLOW_PITCH, FLIGHT, postTiming, resolveFollow } from "./embed";
+import { CameraFlight, MapAccess } from "./CameraFlight";
 
 // Tiles streamed around the camera; the engine caps a subscription at 384 x 384, which a radius
 // of 188 plus the grid padding fills exactly. Past that, players come from the roster instead.
@@ -76,6 +77,15 @@ export class LiveController {
     private listed?: { roster: RosterPlayer[]; filter: string; players: RosterPlayer[] };
 
     private started: boolean = false;
+
+    // Follow changes fly the camera (CameraFlight) instead of cutting; the renderer hands over map loading and
+    // its canvas (for the warp blur).
+    private flight?: CameraFlight;
+    maps?: MapAccess;
+    canvas?: HTMLElement;
+    // ?flight=0: time from a follow change until the destination squares are loaded.
+    // A follow change being timed: until the flight has landed (or the jump is done) and nothing in view is blank.
+    private timing?: { mode: "flight" | "snap"; start: number; tiles: number; frames: number; blankFrames: number };
 
     // Bumped on any change the UI should re-render for.
     version: number = 0;
@@ -165,7 +175,25 @@ export class LiveController {
             }
         }
 
-        this.updateFollow(camera, getGroundY);
+        if (this.flight) {
+            if (this.flight.step(camera, this.maps)) {
+                this.flight = undefined;
+                this.orbitDistance = EMBED ? EMBED_FOLLOW_DISTANCE : FOLLOW_DISTANCE;
+            }
+        } else {
+            this.updateFollow(camera, getGroundY);
+        }
+        const tm = this.timing;
+        if (tm && this.maps) {
+            tm.frames++;
+            const blank = this.maps.blankOnScreen > 0;
+            if (blank) tm.blankFrames++;
+            // The map manager counts blanks for the previous camera; give it 3 frames after the move.
+            if (!this.flight && tm.frames > 3 && !blank) {
+                postTiming(tm.mode, performance.now() - tm.start, tm.tiles, tm.frames, tm.blankFrames);
+                this.timing = undefined;
+            }
+        }
 
         // Seeing further than the engine will stream: the half behind the camera is mostly off
         // screen, so slide the area forward, up to half its size (less when looking down).
@@ -198,9 +226,22 @@ export class LiveController {
     // keep following them.
     goToPlayer(name: string, camera: Camera): void {
         const visible = this.world.findPlayer(name);
-        const entry = this.world.rosterPlayers.find(
-            (p) => p[1].toLowerCase() === name.toLowerCase(),
-        );
+        const entry = this.world.rosterPlayers.find((p) => p[1].toLowerCase() === name.toLowerCase());
+        const target = visible ? { x: visible.x / 128, z: visible.z / 128 } : entry ? { x: entry[2] + 0.5, z: entry[3] + 0.5 } : undefined;
+        // Already following someone: fly there. The first follow (page load) still jumps straight in.
+        if (target && FLIGHT && this.followName !== undefined && this.followName.toLowerCase() !== name.toLowerCase()) {
+            this.flight?.cancel();
+            this.flight = new CameraFlight(camera, target.x, target.z, EMBED ? EMBED_FOLLOW_DISTANCE : FOLLOW_DISTANCE, EMBED ? EMBED_FOLLOW_PITCH : FOLLOW_PITCH, this.canvas);
+            this.timing = { mode: "flight", start: performance.now(), tiles: this.flight.distance, frames: 0, blankFrames: 0 };
+            this.followName = name;
+            this.followSlot = -1;
+            this.lastRosterJumpTick = this.world.rosterTick;
+            this.version++;
+            return;
+        }
+        if (target && this.followName !== undefined) {
+            this.timing = { mode: "snap", start: performance.now(), tiles: Math.hypot(target.x - camera.getPosX(), target.z - camera.getPosZ()), frames: 0, blankFrames: 0 };
+        }
         if (visible) {
             this.flyTo(camera, visible.x / 128, visible.z / 128);
         } else if (entry) {
@@ -251,6 +292,8 @@ export class LiveController {
     }
 
     unfollow(): void {
+        this.flight?.cancel();
+        this.flight = undefined;
         if (this.followName === undefined) {
             return;
         }
