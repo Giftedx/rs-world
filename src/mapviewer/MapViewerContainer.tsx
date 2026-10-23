@@ -63,6 +63,29 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
         }
     }, [renderer]);
 
+    // Embedded use (the swarm dashboard): change the followed player, frame cap or resolution by postMessage,
+    // so the parent never reloads the frame. ?fps=N caps the frame rate from the start.
+    useEffect(() => {
+        const q = new URLSearchParams(window.location.search);
+        const fps = Number(q.get("fps"));
+        if (fps > 0) renderer.fpsLimit = fps;
+        // ?scale=0.5 renders at half resolution: about a quarter of the pixel work.
+        const scale = Number(q.get("scale"));
+        if (scale > 0) renderer.resolutionScale = scale;
+        const onMessage = (e: MessageEvent) => {
+            const d = e.data;
+            if (!d || typeof d !== "object") return;
+            const live = renderer.mapViewer.live;
+            if (typeof d.follow === "string" && live) {
+                if (live.followName?.toLowerCase() !== d.follow.toLowerCase()) live.pendingFollow = d.follow;
+            }
+            if (typeof d.fps === "number" && d.fps > 0) renderer.fpsLimit = d.fps;
+            if (typeof d.scale === "number" && d.scale > 0) renderer.resolutionScale = d.scale;
+        };
+        window.addEventListener("message", onMessage);
+        return () => window.removeEventListener("message", onMessage);
+    }, [renderer]);
+
     const animate = (time: DOMHighResTimeStamp) => {
         // Wait for 200ms before updating search params
         if (
