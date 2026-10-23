@@ -58,7 +58,8 @@ export class LiveController {
         showNpcs: true,
         showPlayerNames: true,
         showNpcNames: false,
-        showChat: true,
+        // Chat bubbles are noise in the dashboard's small map window.
+        showChat: !EMBED,
         showCombat: true,
     };
 

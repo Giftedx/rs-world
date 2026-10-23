@@ -1,4 +1,4 @@
-import { isNameHidden } from "./embed";
+import { OTHER_NAME_ALPHA, isNameHidden, isNameHighlighted } from "./embed";
 import { vec4 } from "gl-matrix";
 
 import { Camera } from "../mapviewer/Camera";
@@ -163,8 +163,8 @@ export class LiveOverlay {
                 top,
                 head,
                 name: showName && !(isPlayer && isNameHidden(e.getName())) ? (isPlayer ? e.getName() : formatNpcName(e as LiveNpc)) : undefined,
-                nameColour: isFollowed ? "#ff981f" : isPlayer ? "#ffffff" : "#ffff00",
-                nameAlpha,
+                nameColour: isFollowed ? "#ff981f" : isPlayer && isNameHighlighted(e.getName()) ? "#ffc21a" : isPlayer ? "#ffffff" : "#ffff00",
+                nameAlpha: isFollowed || !isPlayer || isNameHighlighted(e.getName()) ? nameAlpha : nameAlpha * OTHER_NAME_ALPHA,
                 nameY: top.y - 8,
                 chatY: chat ? head.y : undefined,
                 combat,
@@ -231,7 +231,8 @@ export class LiveOverlay {
         for (let i = farNames.length - 1; i >= 0; i--) {
             const n = farNames[i];
             if (n.placed) {
-                this.drawText(n.name, n.top.x, n.top.y - 8, "#ffffff", n.alpha);
+                const ours = isNameHighlighted(n.name);
+                this.drawText(n.name, n.top.x, n.top.y - 8, ours ? "#ffc21a" : "#ffffff", ours ? n.alpha : n.alpha * OTHER_NAME_ALPHA);
             }
         }
         for (let i = overlays.length - 1; i >= 0; i--) {
