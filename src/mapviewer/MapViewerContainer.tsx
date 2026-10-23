@@ -10,6 +10,7 @@ import { WorldMapModal } from "../components/rs/worldmap/WorldMapModal";
 import { InfoPanel } from "../live/InfoPanel";
 import { LiveOverlay } from "../live/LiveOverlay";
 import { LivePanel } from "../live/LivePanel";
+import { EMBED } from "../live/embed";
 import { RS_TO_DEGREES } from "../rs/MathConstants";
 import { isMobileDevice, isTouchDevice } from "../util/DeviceUtil";
 import { MapViewer } from "./MapViewer";
@@ -46,7 +47,8 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
 
     const renderer = mapViewer.renderer;
 
-    const [hideUi, setHideUi] = useState(false);
+    // ?embed=1 (the swarm dashboard): no settings panel, live/info panels, minimap or joysticks.
+    const [hideUi, setHideUi] = useState(EMBED);
     const [fps, setFps] = useState(0);
     const [cameraYaw, setCameraYaw] = useState(mapViewer.camera.getYaw());
     const [isWorldMapOpen, setWorldMapOpen] = useState<boolean>(false);
@@ -216,7 +218,7 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
 
             {menuProps && <OsrsMenu {...menuProps} />}
 
-            <MapViewerControls renderer={renderer} hideUi={hideUi} setHideUi={setHideUi} />
+            <MapViewerControls renderer={renderer} hideUi={hideUi || EMBED} setHideUi={EMBED ? () => {} : setHideUi} />
 
             {!hideUi && (
                 <span>
