@@ -60,7 +60,7 @@ export type FeedTick = {
     n?: FeedEntity[];
     rp?: number[];
     rn?: number[];
-    // zone state (locs, projectiles, map anims), applied in order.
+    // zone state (locs, ground objs, projectiles, map anims), applied in order.
     w?: ZoneRecord[];
 };
 
@@ -68,7 +68,7 @@ export type FeedTick = {
 export type ZoneRecord =
     // the held area (zone-aligned tiles, every level), first in w when it changes: zones newly
     // held start at the cache default (all of them when r = 1, a reset), zones left are dropped;
-    // the loc state of newly held zones follows as la/ld
+    // the state of newly held zones follows as la/ld/oa
     | { e: "za"; x: number; z: number; w: number; h: number; r?: number }
     // loc add/change (s = shape, r = angle) and loc del
     | { e: "la"; x: number; z: number; l: number; id: number; s: number; r: number }
@@ -89,6 +89,12 @@ export type ZoneRecord =
           p: number;
           bx: number[];
       }
+    // ground objs, from a server that sends them: a public obj add or reveal (id = obj type,
+    // n = count), an obj del (one obj of that type on the tile) and a count change (n0 = old
+    // count, n = new count). Private objs are never sent.
+    | { e: "oa"; x: number; z: number; l: number; id: number; n: number }
+    | { e: "od"; x: number; z: number; l: number; id: number }
+    | { e: "oc"; x: number; z: number; l: number; id: number; n0: number; n: number }
     // map anim (id = spotanim, h = height, d = delay in client cycles)
     | { e: "ma"; x: number; z: number; l: number; id: number; h: number; d: number }
     // projectile from (x, z) to the absolute tile (dx, dz). tg = target as the client protocol

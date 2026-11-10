@@ -9,8 +9,9 @@ import { LiveWorld } from "./LiveWorld";
 import { ZoneRecord } from "./protocol";
 
 // What a logged-in player sees of the engine's zones that is not a player or npc: loc changes
-// (fires, stumps, open doors, depleted rocks), loc anims, projectiles and map anims (the feed
-// never sends ground objs). One store for the whole viewer, fed by every live feed.
+// (fires, stumps, open doors, depleted rocks), loc anims, public ground objs, projectiles and map
+// anims. One store for the whole viewer, fed by every live feed. Ground objs come only from a
+// server that sends oa/od/oc records; without them the obj store stays empty.
 // Each feed holds an area (za, all levels); a zone is held while any feed's area covers it and
 // is dropped once none does. The feeds describe the same server, so a zone keeps the tick its
 // state is current as of, and a feed's records for it apply only when they are newer: that way
@@ -63,6 +64,20 @@ export class LocOverride {
         public id: number,
         public shape: number,
         public angle: number,
+    ) {}
+}
+
+export type GroundObj = { id: number; count: number };
+
+// The objs on one tile, oldest first (the order the server added them).
+export class ObjTile {
+    objs: GroundObj[] = [];
+
+    constructor(
+        readonly key: number,
+        readonly x: number,
+        readonly z: number,
+        readonly level: number,
     ) {}
 }
 
@@ -177,6 +192,7 @@ class Zone {
     tick: number = -1;
     writer: number = 0;
     locs: Set<LocOverride> = new Set();
+    objs: Set<ObjTile> = new Set();
 
     constructor(
         readonly key: number,
@@ -253,6 +269,8 @@ export class WorldState {
     locs: Map<number, LocOverride> = new Map();
     // Overrides by map square ((mapX << 8) + mapY), to apply to a square when it loads.
     locsBySquare: Map<number, Set<LocOverride>> = new Map();
+    // Ground objs by tile (getTileKey).
+    objTiles: Map<number, ObjTile> = new Map();
     mapAnims: MapAnim[] = [];
     projectiles: Projectile[] = [];
     // Overrides that are animating, stepped by update().
@@ -265,8 +283,10 @@ export class WorldState {
     private applyCount: number = 0;
     private serverTick: number = -1;
 
-    // Bumped on any change to the loc overrides.
+    // Bumped on any change to the loc overrides, and to the ground objs (the renderer caches its
+    // obj stacks, whose heights depend on the locs beneath).
     locVersion: number = 0;
+    objVersion: number = 0;
 
     groundHeight?: GroundHeightFunction;
     locChangeListeners: LocChangeListener[] = [];
@@ -340,6 +360,15 @@ export class WorldState {
                         record.r,
                         record.q,
                     );
+                    break;
+                case "oa":
+                    this.addObj(zone, record.x, record.z, record.l, record.id, record.n);
+                    break;
+                case "od":
+                    this.delObj(record.x, record.z, record.l, record.id);
+                    break;
+                case "oc":
+                    this.countObj(record.x, record.z, record.l, record.id, record.n0, record.n);
                     break;
                 case "ma":
                     this.addMapAnim(record.x, record.z, record.l, record.id, record.h, record.d);
@@ -446,6 +475,13 @@ export class WorldState {
             this.removeLoc(loc);
         }
         zone.locs.clear();
+        if (zone.objs.size > 0) {
+            for (const tile of zone.objs) {
+                this.objTiles.delete(tile.key);
+            }
+            zone.objs.clear();
+            this.objVersion++;
+        }
     }
 
     private removeLoc(loc: LocOverride): void {
@@ -603,6 +639,72 @@ export class WorldState {
                 loc.explicitAnim = false;
                 this.notifyLoc(loc);
             }
+        }
+    }
+
+    // oa: a public obj appears (dropped, spawned, or a private drop revealed to everyone).
+    private addObj(
+        zone: Zone,
+        x: number,
+        z: number,
+        level: number,
+        id: number,
+        count: number,
+    ): void {
+        if (!(id >= 0) || !(count >= 1)) {
+            return;
+        }
+        const key = getTileKey(x, z, level);
+        let tile = this.objTiles.get(key);
+        if (!tile) {
+            tile = new ObjTile(key, x, z, level);
+            this.objTiles.set(key, tile);
+            zone.objs.add(tile);
+        }
+        tile.objs.push({ id, count });
+        this.objVersion++;
+    }
+
+    // od: one obj of that type leaves the tile (picked up or despawned).
+    private delObj(x: number, z: number, level: number, id: number): void {
+        const key = getTileKey(x, z, level);
+        const tile = this.objTiles.get(key);
+        if (!tile) {
+            return;
+        }
+        const index = tile.objs.findIndex((obj) => obj.id === id);
+        if (index === -1) {
+            return;
+        }
+        tile.objs.splice(index, 1);
+        if (tile.objs.length === 0) {
+            this.objTiles.delete(key);
+            this.zones.get(getZoneKey(x, z, level))?.objs.delete(tile);
+        }
+        this.objVersion++;
+    }
+
+    // oc: a stack's count changes.
+    private countObj(
+        x: number,
+        z: number,
+        level: number,
+        id: number,
+        oldCount: number,
+        count: number,
+    ): void {
+        if (!(count >= 1)) {
+            return;
+        }
+        const tile = this.objTiles.get(getTileKey(x, z, level));
+        // The one with the old count, else the first of that type (a snapshot taken on the tick
+        // the count changed already has the new count).
+        const obj =
+            tile?.objs.find((obj) => obj.id === id && obj.count === oldCount) ??
+            tile?.objs.find((obj) => obj.id === id);
+        if (obj && obj.count !== count) {
+            obj.count = count;
+            this.objVersion++;
         }
     }
 
