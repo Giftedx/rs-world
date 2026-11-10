@@ -62,7 +62,24 @@ export const MAX_RATIO = 0.8;
 // Time a pane takes to move to a new rectangle.
 export const TRANSITION_MS = 240;
 
-export type LayoutOptions = { mode: LayoutMode; gap: number; ratio: number };
+// Share of the window height the thumbnail strip of the "focus" layout takes, when the page sets it.
+export const MIN_STRIP = 0.1;
+export const MAX_STRIP = 0.45;
+// The smallest row or column, as a part of an even one.
+export const MIN_SHARE = 0.25;
+
+// rowShares and colShares size the rows and the columns of the "grid" and "columns" layouts: one
+// share for each row, and one for each pane of a full row, as parts of 1. A list of another length
+// than the layout has rows or columns is not used: those rows or columns are then even.
+// stripShare sizes the strip of the "focus" layout.
+export type LayoutOptions = {
+    mode: LayoutMode;
+    gap: number;
+    ratio: number;
+    rowShares?: number[];
+    colShares?: number[];
+    stripShare?: number;
+};
 
 export function parseLayoutMode(raw: unknown): LayoutMode | undefined {
     return LAYOUT_MODES.find((mode) => mode === raw);
@@ -78,6 +95,34 @@ export function parseRatio(raw: unknown): number | undefined {
     return typeof raw === "number" && raw >= MIN_RATIO && raw <= MAX_RATIO ? raw : undefined;
 }
 
+// Row or column shares from a message: at most MAX_PANES positive numbers, returned as parts of 1.
+// An empty list means even sizes. A list with a share under MIN_SHARE of an even one is not taken.
+export function parseShares(raw: unknown): number[] | undefined {
+    if (!Array.isArray(raw) || raw.length > MAX_PANES) {
+        return undefined;
+    }
+    let sum = 0;
+    for (const value of raw) {
+        if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+            return undefined;
+        }
+        sum += value;
+    }
+    const shares = raw.map((value: number) => value / sum);
+    return shares.some((share) => share < MIN_SHARE / raw.length - 1e-9) ? undefined : shares;
+}
+
+// The strip share from a message. 0 gives the strip its own size back.
+export function parseStrip(raw: unknown): number | undefined {
+    return raw === 0 || (typeof raw === "number" && raw >= MIN_STRIP && raw <= MAX_STRIP)
+        ? raw
+        : undefined;
+}
+
+export function sameShares(a: readonly number[] | undefined, b: readonly number[] | undefined) {
+    return (a?.length ?? 0) === (b?.length ?? 0) && (a ?? []).every((share, i) => share === b![i]);
+}
+
 // A pane is a 3D view: a 4:3 pane shows its player best. The grid is scored by the largest 4:3
 // box that fits in a cell.
 const PANE_ASPECT = 4 / 3;
@@ -88,12 +133,24 @@ const MIN_THUMB_WIDTH = 80;
 const MAX_THUMB_ROWS = 3;
 
 // Cuts a length into n parts with a gap between neighbours. Every edge is a whole pixel, the
-// parts differ by at most 1 px and the last part ends at the end of the length.
-function cut(start: number, length: number, n: number, gap: number, out: number[]): void {
+// parts differ by at most 1 px and the last part ends at the end of the length. With n shares,
+// part i takes shares[i] of the length that is not gap.
+function cut(
+    start: number,
+    length: number,
+    n: number,
+    gap: number,
+    out: number[],
+    shares?: readonly number[],
+): void {
     const free = Math.max(length - gap * (n - 1), 0);
+    const sized = shares?.length === n ? shares : undefined;
+    let done = 0;
     for (let i = 0; i < n; i++) {
-        const from = Math.round((i * free) / n);
-        out.push(start + from + i * gap, Math.max(Math.round(((i + 1) * free) / n) - from, 0));
+        const from = Math.round(sized ? done * free : (i * free) / n);
+        done += sized ? sized[i] : 0;
+        const to = i === n - 1 ? free : Math.round(sized ? done * free : ((i + 1) * free) / n);
+        out.push(start + from + i * gap, Math.max(to - from, 0));
     }
 }
 
@@ -106,12 +163,14 @@ function rowsInto(
     h: number,
     counts: number[],
     gap: number,
+    rowShares?: readonly number[],
+    colShares?: readonly number[],
 ): void {
     const ys: number[] = [];
-    cut(y, h, counts.length, gap, ys);
+    cut(y, h, counts.length, gap, ys, rowShares);
     for (let r = 0; r < counts.length; r++) {
         const xs: number[] = [];
-        cut(x, w, counts[r], gap, xs);
+        cut(x, w, counts[r], gap, xs, colShares);
         for (let c = 0; c < counts[r]; c++) {
             rects.push({ x: xs[c * 2], y: ys[r * 2], w: xs[c * 2 + 1], h: ys[r * 2 + 1] });
         }
@@ -169,9 +228,12 @@ function gridInto(
     w: number,
     h: number,
     gap: number,
+    rowShares?: readonly number[],
+    colShares?: readonly number[],
 ): void {
     if (count > 0) {
-        rowsInto(rects, x, y, w, h, fullRows(count, gridColumns(count, w, h, gap)), gap);
+        const counts = fullRows(count, gridColumns(count, w, h, gap));
+        rowsInto(rects, x, y, w, h, counts, gap, rowShares, colShares);
     }
 }
 
@@ -184,15 +246,16 @@ export function tileRects(
     options: LayoutOptions,
 ): PaneRect[] {
     const rects: PaneRect[] = [];
-    const { mode, gap, ratio } = options;
+    const { mode, gap, ratio, rowShares, colShares, stripShare } = options;
     if (count <= 0) {
         return rects;
     }
     if (count === 1 || mode === "grid") {
-        gridInto(rects, count, 0, 0, width, height, gap);
+        gridInto(rects, count, 0, 0, width, height, gap, rowShares, colShares);
     } else if (mode === "columns") {
         const perRow = Math.max(Math.floor((width + gap) / (MIN_COLUMN_WIDTH + gap)), 1);
-        rowsInto(rects, 0, 0, width, height, evenRows(count, Math.ceil(count / perRow)), gap);
+        const counts = evenRows(count, Math.ceil(count / perRow));
+        rowsInto(rects, 0, 0, width, height, counts, gap, rowShares, colShares);
     } else if (mode === "main") {
         // The stack goes on the long side of the window: to the right of the main pane in a
         // wide window, under it in a tall one. The stack is a grid of its own.
@@ -213,7 +276,9 @@ export function tileRects(
             MAX_THUMB_ROWS,
         );
         const thumbH = Math.min(Math.max(Math.round(height * 0.16), 56), 150);
-        const stripH = Math.min(rows * thumbH + (rows - 1) * gap, Math.round(height * 0.45));
+        const stripH = stripShare
+            ? Math.round(height * Math.min(Math.max(stripShare, MIN_STRIP), MAX_STRIP))
+            : Math.min(rows * thumbH + (rows - 1) * gap, Math.round(height * MAX_STRIP));
         const mainH = Math.max(height - stripH - gap, 0);
         rects.push({ x: 0, y: 0, w: width, h: mainH });
         rowsInto(rects, 0, mainH + gap, width, height - mainH - gap, evenRows(thumbs, rows), gap);

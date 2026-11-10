@@ -14,9 +14,13 @@ import {
     parseMultiDistance,
     parseMultiNames,
     parseRatio,
+    parseShares,
+    parseStrip,
     reorderBy,
+    sameShares,
 } from "../live/MultiLayout";
 import { MultiPane, MultiView } from "../live/MultiView";
+import { WorldState } from "../live/WorldState";
 import {
     EMBED,
     paneMessageName,
@@ -24,7 +28,6 @@ import {
     postMultiPick,
     postMultiStatus,
 } from "../live/embed";
-import { WorldState } from "../live/WorldState";
 import { MenuTargetType } from "../rs/MenuEntry";
 import { CacheSystem } from "../rs/cache/CacheSystem";
 import { CacheLoaderFactory, getCacheLoaderFactory } from "../rs/cache/loader/CacheLoaderFactory";
@@ -225,7 +228,8 @@ export class MapViewer {
         if (multi !== null) {
             this.multiRenderDistance =
                 parseMultiDistance(searchParams.get("md")) ?? this.multiRenderDistance;
-            this.multiLayout.mode = parseLayoutMode(searchParams.get("tile")) ?? this.multiLayout.mode;
+            this.multiLayout.mode =
+                parseLayoutMode(searchParams.get("tile")) ?? this.multiLayout.mode;
             this.setMulti(parseMultiNames(multi));
         }
 
@@ -368,7 +372,8 @@ export class MapViewer {
             const index = spare.findIndex(
                 (p) =>
                     p.asked?.toLowerCase() === key ||
-                    (!p.asked && (p.live.followName ?? p.live.pendingFollow)?.toLowerCase() === key),
+                    (!p.asked &&
+                        (p.live.followName ?? p.live.pendingFollow)?.toLowerCase() === key),
             );
             if (index === -1) {
                 return undefined;
@@ -402,7 +407,9 @@ export class MapViewer {
         this.updateSearchParams();
     }
 
-    // {multiLayout: {mode, main, gap, ratio, animate, color}}: the tiling of the panes. A part that
+    // {multiLayout: {mode, main, gap, ratio, rows, cols, strip, animate, color}}: the tiling of the
+    // panes. rows and cols are the shares of the rows and the columns, strip the share of the
+    // "focus" strip; an empty list or 0 gives the even sizes back. A part that
     // is absent or out of range keeps its value. main is a pane's name or its number in the asked
     // order; color (#rrggbb) is the colour of the gaps.
     setMultiLayout(spec: unknown): void {
@@ -414,6 +421,9 @@ export class MapViewer {
         layout.mode = parseLayoutMode(d.mode) ?? layout.mode;
         layout.gap = parseGap(d.gap) ?? layout.gap;
         layout.ratio = parseRatio(d.ratio) ?? layout.ratio;
+        layout.rowShares = parseShares(d.rows) ?? layout.rowShares;
+        layout.colShares = parseShares(d.cols) ?? layout.colShares;
+        layout.stripShare = parseStrip(d.strip) ?? layout.stripShare;
         if (typeof d.animate === "boolean") {
             this.multiAnimate = d.animate;
         }
@@ -439,12 +449,22 @@ export class MapViewer {
         if (!multi) {
             return;
         }
-        const { mode, gap, ratio } = this.multiLayout;
+        const { mode, gap, ratio, rowShares, colShares, stripShare } = this.multiLayout;
         const options = multi.options;
-        if (options.mode !== mode || options.gap !== gap || options.ratio !== ratio) {
+        if (
+            options.mode !== mode ||
+            options.gap !== gap ||
+            options.ratio !== ratio ||
+            options.stripShare !== stripShare ||
+            !sameShares(options.rowShares, rowShares) ||
+            !sameShares(options.colShares, colShares)
+        ) {
             options.mode = mode;
             options.gap = gap;
             options.ratio = ratio;
+            options.rowShares = rowShares;
+            options.colShares = colShares;
+            options.stripShare = stripShare;
             multi.relayout();
         }
         multi.animate = this.multiAnimate;
