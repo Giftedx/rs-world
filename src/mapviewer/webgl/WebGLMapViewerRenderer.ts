@@ -1131,6 +1131,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             this.mapViewer.worldState,
             this.liveRenderer,
             this.mapViewer.locTypeLoader,
+            this.mapViewer.objTypeLoader,
         );
     }
 
