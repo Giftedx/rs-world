@@ -62,6 +62,9 @@ export abstract class MapViewerRenderer<T extends MapSquare = MapSquare> extends
 
     setLoadNpcs?(enabled: boolean): void;
 
+    // The highest floor an embedding page wants drawn (0-3).
+    setFloorLimit(level: number): void {}
+
     handleInput(deltaTime: number) {
         this.handleKeyInput(deltaTime);
         this.handleMouseInput();

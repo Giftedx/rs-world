@@ -11,4 +11,5 @@ uniform SceneUniforms {
     float u_brightness;
     float u_colorBanding;
     float u_isNewTextureAnim;
+    float u_maxPlane;
 };

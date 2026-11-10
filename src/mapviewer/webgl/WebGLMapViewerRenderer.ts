@@ -22,7 +22,7 @@ import { LiveEntity } from "../../live/LiveEntity";
 import { LiveEntityRenderer } from "../../live/LiveEntityRenderer";
 import { LiveOverlay } from "../../live/LiveOverlay";
 import { WorldStateMaps } from "../../live/WorldStateMaps";
-import { SQUARE_CACHE } from "../../live/embed";
+import { FIRST_MAX_LEVEL, SQUARE_CACHE } from "../../live/embed";
 import { createTextureArray } from "../../picogl/PicoTexture";
 import { MenuTargetType } from "../../rs/MenuEntry";
 import { Scene } from "../../rs/scene/Scene";
@@ -155,10 +155,13 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     frameFxaaDrawCall?: DrawCall;
 
     // Settings
-    maxLevel: number = Scene.MAX_LEVELS - 1;
+    // The highest floor drawn. Every map square holds all floors and the shader hides those above this.
+    maxLevel: number = FIRST_MAX_LEVEL ?? Scene.MAX_LEVELS - 1;
     // The "Max Level" slider; "Follow Level" overrides it while following a player.
-    manualMaxLevel: number = Scene.MAX_LEVELS - 1;
-    followLevel: boolean = true;
+    // A floor limit from the embedding page (?ml= or a {maxLevel} message) sets the slider and turns
+    // "Follow Level" off: the page owns the floor.
+    manualMaxLevel: number = FIRST_MAX_LEVEL ?? Scene.MAX_LEVELS - 1;
+    followLevel: boolean = FIRST_MAX_LEVEL === undefined;
 
     skyColor: vec4 = vec4.fromValues(0, 0, 0, 1);
     fogDepth: number = 16;
@@ -261,6 +264,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             PicoGL.FLOAT, // float u_brightness;
             PicoGL.FLOAT, // float u_colorBanding;
             PicoGL.FLOAT, // float u_isNewTextureAnim;
+            PicoGL.FLOAT, // float u_maxPlane;
         ]);
 
         this.initFramebuffers();
@@ -667,7 +671,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         >(this.dataLoader, {
             mapX,
             mapY,
-            maxLevel: this.maxLevel,
+            maxLevel: Scene.MAX_LEVELS - 1,
             loadNpcs: this.loadNpcs,
             smoothTerrain: this.smoothTerrain,
             minimizeDrawCalls: !this.hasMultiDraw,
@@ -728,7 +732,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     isValidMapData(mapData: SdMapData): boolean {
         return (
             mapData.cacheName === this.mapViewer.loadedCache.info.name &&
-            mapData.maxLevel === this.maxLevel &&
+            mapData.maxLevel === Scene.MAX_LEVELS - 1 &&
             mapData.loadNpcs === this.loadNpcs &&
             mapData.smoothTerrain === this.smoothTerrain
         );
@@ -748,18 +752,21 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             if (level !== undefined) {
                 this.setMaxLevel(level);
             }
-            // Level unknown while flying to them: keep the current one rather than reload twice.
+            // Level unknown while flying to them: keep the current one.
             return;
         }
         this.setMaxLevel(this.manualMaxLevel);
     }
 
+    // A floor change reloads nothing: the squares hold every floor and u_maxPlane hides the rest.
     setMaxLevel(maxLevel: number): void {
-        const updated = this.maxLevel !== maxLevel;
         this.maxLevel = maxLevel;
-        if (updated) {
-            this.clearMaps();
-        }
+    }
+
+    override setFloorLimit(level: number): void {
+        this.manualMaxLevel = level;
+        this.followLevel = false;
+        this.setMaxLevel(level);
     }
 
     setSkyColor(r: number, g: number, b: number) {
@@ -911,6 +918,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             .set(8, this.brightness as any)
             .set(9, this.colorBanding as any)
             .set(10, this.mapViewer.isNewTextureAnim as any)
+            .set(11, this.maxLevel as any)
             .update();
 
         const currInteractions = this.interactions[frameCount % this.interactions.length];
