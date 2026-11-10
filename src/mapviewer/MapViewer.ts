@@ -485,7 +485,10 @@ export class MapViewer {
         }
         multi.setActive(multi.panes.indexOf(pane));
         this.syncActivePane();
-        multi.onLayout?.(multi.layoutInfo(performance.now()));
+        // With a layout change on its way, the next frame reports the new rectangles and this pane.
+        if (!multi.layoutPending()) {
+            multi.onLayout?.(multi.layoutInfo(performance.now()));
+        }
     }
 
     // {multiChrome: false}: the page draws the pane names and frames; the viewer draws none.

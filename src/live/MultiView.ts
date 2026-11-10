@@ -232,6 +232,7 @@ export class MultiView {
     private width = -1;
     private height = -1;
     private dirty = true;
+    private chrome = true;
     private moveStart = 0;
     private lastStatusAt = 0;
     private canvas?: HTMLCanvasElement;
@@ -289,6 +290,14 @@ export class MultiView {
         }
     };
 
+    // A double click on the single view locks the pointer for the camera. On panes that a page
+    // owns, a double click is the page's (it opens that pane): the pointer stays free.
+    private readonly onDouble = (e: MouseEvent) => {
+        if (this.embedded || !this.chrome) {
+            e.stopImmediatePropagation();
+        }
+    };
+
     // True when the next frame has a layout change to start or a move to carry on.
     wantsFrames(): boolean {
         return this.animating || (this.dirty && this.panes.length > 0);
@@ -296,7 +305,14 @@ export class MultiView {
 
     // The page draws the names and frames itself: the panes show no label and no selection.
     setChrome(on: boolean): void {
+        this.chrome = on;
         this.root.classList.toggle("no-chrome", !on);
+    }
+
+    // True from a change of the panes or the layout until the frame that works out the new
+    // rectangles: until then the target rectangles are the old ones.
+    layoutPending(): boolean {
+        return this.dirty;
     }
 
     // The colour of the gaps, which a fading pane is covered with.
@@ -390,6 +406,7 @@ export class MultiView {
             canvas.addEventListener("pointerdown", this.onDown, { capture: true });
             canvas.addEventListener("pointerup", this.onUp, { capture: true });
             canvas.addEventListener("wheel", this.onWheel, { capture: true, passive: true });
+            canvas.addEventListener("dblclick", this.onDouble, { capture: true });
         }
         if (this.root.parentElement !== container) {
             container.appendChild(this.root);
@@ -400,6 +417,7 @@ export class MultiView {
         this.canvas?.removeEventListener("pointerdown", this.onDown, { capture: true });
         this.canvas?.removeEventListener("pointerup", this.onUp, { capture: true });
         this.canvas?.removeEventListener("wheel", this.onWheel, { capture: true });
+        this.canvas?.removeEventListener("dblclick", this.onDouble, { capture: true });
         this.canvas = undefined;
     }
 

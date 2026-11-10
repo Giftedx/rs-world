@@ -241,6 +241,39 @@ test("with reduced motion, or animate off, every change is drawn at once", () =>
     }
 });
 
+test("a double click on a pane that a page owns does not reach the camera's pointer lock", () => {
+    const canvas = document.createElement("canvas");
+    const container = document.createElement("div");
+    container.appendChild(canvas);
+    const lock = jest.fn();
+    canvas.addEventListener("dblclick", lock);
+    const own = new MultiView(false, () => {});
+    own.attach(canvas, container);
+    canvas.dispatchEvent(new MouseEvent("dblclick"));
+    expect(lock).toHaveBeenCalledTimes(1);
+    own.setChrome(false);
+    canvas.dispatchEvent(new MouseEvent("dblclick"));
+    expect(lock).toHaveBeenCalledTimes(1);
+    own.detach();
+    canvas.dispatchEvent(new MouseEvent("dblclick"));
+    expect(lock).toHaveBeenCalledTimes(2);
+    const embedded = new MultiView(true, () => {});
+    embedded.attach(canvas, container);
+    canvas.dispatchEvent(new MouseEvent("dblclick"));
+    expect(lock).toHaveBeenCalledTimes(2);
+});
+
+test("layoutPending is true from a change until the frame that lays it out", () => {
+    const { view, panes } = makeView(["Ann", "Bob"]);
+    expect(view.layoutPending()).toBe(true);
+    view.layout(W, H, 0);
+    expect(view.layoutPending()).toBe(false);
+    view.reorder([panes[1], panes[0]]);
+    expect(view.layoutPending()).toBe(true);
+    view.layout(W, H, 500);
+    expect(view.layoutPending()).toBe(false);
+});
+
 test("findPane takes a number in the asked order or a name in any case", () => {
     const { view, panes } = makeView(["Ann", "Bob"]);
     expect(view.findPane(1)).toBe(panes[1]);
