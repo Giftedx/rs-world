@@ -7,6 +7,13 @@ It's a fork of dennisdev's [rs-map-viewer](https://github.com/dennisdev/rs-map-v
 behind [osrs.world](https://osrs.world). The terrain, locs and camera are theirs; the live layer is
 new. See [DESIGN.md](DESIGN.md) for how it works.
 
+**This fork** ([Giftedx/rs-world](https://github.com/Giftedx/rs-world)) adds to
+[MaxBittker/rs-world](https://github.com/MaxBittker/rs-world): an embed mode that another page drives by
+URL and by message, multi-view with tiling layouts, camera flight between followed players, touch
+gestures and ground items. [rs-fleet-dashboard](https://github.com/Giftedx/rs-fleet-dashboard) uses it as
+its 3D view. Each change goes to MaxBittker/rs-world as its own pull request. See [Credits](#credits)
+for the authors of the work it builds on.
+
 <img src="screenshots/live-lumbridge.png" alt="Live players and npcs in the Lumbridge castle courtyard">
 
 ## What you see
@@ -70,6 +77,14 @@ That only works if that server runs with `WORLD_FEED=true`.
 | `md=<tiles>`           | Multi-view distance per view, 16-128 (default 48).                          |
 | `tile=<mode>`          | Multi-view layout: `grid` (default), `main`, `focus` or `columns`.          |
 | `cx cy cz p y v=1`     | Camera position, pitch and yaw, same as osrs.world.                         |
+| `embed=1`              | For a frame in another page: hides the panels, the minimap, the fps counter and the joysticks, and frames the followed player from 20 tiles out. |
+| `fps=<n>`              | Frame rate cap.                                                             |
+| `scale=<0-1>`          | Render resolution scale. `0.5` draws a quarter of the pixels.               |
+| `ml=<0-3>`             | The highest floor drawn, from the first frame.                              |
+| `hideNames=<a,b>`      | Players whose nameplates are never drawn.                                   |
+| `hideNamesFrom=<url>`  | The same list as a JSON array, fetched with CORS.                           |
+| `highlightFrom=<url>`  | A JSON array of players, fetched with CORS. Their nameplates are gold.      |
+| `flight=0`             | A follow change jumps at once, with no camera flight.                       |
 
 The Live panel (bottom right) shows connection state, the online count and every player (scroll for more). Info, under
 it, credits the original viewer and links the repos. Render settings (top right) default to one step
@@ -81,6 +96,18 @@ iPhone and iPad browsers can load the viewer when WebGL2 is available. Touch con
 joystick and gestures on the scene (see Touch above). On mobile, the player list and Info button sit at the
 top right, and the render settings menu is hidden. Browsers without shared memory use one worker with
 an ordinary copy of the cache; cross-origin isolation is still recommended for lower memory use.
+
+### Messages from an embedding page
+
+A page that holds the viewer in a frame can change it with `postMessage`, so the frame never reloads:
+
+| Message                        | Effect                                                         |
+| ------------------------------ | -------------------------------------------------------------- |
+| `{follow: "<name>"}`           | Fly to this player and follow them.                            |
+| `{fps: 20}`                    | Frame rate cap.                                                |
+| `{scale: 0.5}`                 | Render resolution scale.                                       |
+| `{maxLevel: 1}`                | The highest floor drawn, 0-3. No reload.                       |
+| `{warm: [[x, z], ...]}`        | Up to 16 places that the page may follow next. The viewer loads their map squares ahead. |
 
 ### Multi-view in an embedding page
 
