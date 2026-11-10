@@ -1,4 +1,4 @@
-import { FIRST_MAX_LEVEL, SQUARE_CACHE } from "../../live/embed";
+import { EMBED, FIRST_MAX_LEVEL, SQUARE_CACHE, postMultiStatus } from "../../live/embed";
 import Denque from "denque";
 import { vec2, vec4 } from "gl-matrix";
 import { folder } from "leva";
@@ -23,6 +23,8 @@ import { LiveController } from "../../live/LiveController";
 import { LiveEntity } from "../../live/LiveEntity";
 import { LiveEntityRenderer } from "../../live/LiveEntityRenderer";
 import { LiveOverlay } from "../../live/LiveOverlay";
+import { viewportRect } from "../../live/MultiLayout";
+import { MultiView } from "../../live/MultiView";
 import { WorldStateMaps } from "../../live/WorldStateMaps";
 import { createTextureArray } from "../../picogl/PicoTexture";
 import { MenuTargetType } from "../../rs/MenuEntry";
@@ -60,6 +62,9 @@ const TEXTURE_SIZE = 128;
 // Time a frame may spend on map square uploads. One square per frame limits a follow change to
 // 20 squares a second at 20 frames a second.
 const SQUARE_UPLOAD_BUDGET_MS = 6;
+
+// Multi-view: the colour between panes.
+const PANE_GUTTER_COLOR = [0.07, 0.07, 0.07, 1];
 
 const INTERACT_BUFFER_COUNT = 2;
 const INTERACTION_RADIUS = 5;
@@ -201,6 +206,8 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     // Live world feed entities
     liveRenderer?: LiveEntityRenderer;
     liveRendererController?: LiveController;
+    // Set while the entity renderer draws multi-view panes.
+    private liveRendererMulti?: MultiView;
     // Applies the zone state (locs, projectiles, map anims) to the map squares.
     worldStateMaps?: WorldStateMaps;
     private worldStateManagers: MapManager<WebGLMapSquare>[] = [];
@@ -841,6 +848,13 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     }
 
     override render(time: number, deltaTime: number, resized: boolean): void {
+        if (this.mapViewer.multi) {
+            this.renderMulti(time, deltaTime, resized);
+            return;
+        }
+        if (this.liveRendererMulti) {
+            this.leaveMulti();
+        }
         const showDebugTimer = this.mapViewer.inputManager.isKeyDown("KeyY");
 
         if (showDebugTimer) {
@@ -1124,6 +1138,333 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             this.mapViewer.debugText = `Frame Time GL: ${this.timer.gpuTime.toFixed(
                 2,
             )}ms\n JS: ${this.timer.cpuTime.toFixed(2)}ms`;
+        }
+    }
+
+    // Back in the single view: its overlay canvas returns and the entity renderer (with every baked
+    // model) carries on with the pane that stayed.
+    private leaveMulti(): void {
+        const multi = this.liveRendererMulti;
+        this.liveRendererMulti = undefined;
+        this.liveOverlay.canvas.style.display = "";
+        const live = this.mapViewer.live;
+        if (this.liveRenderer && live && multi && !multi.stopped) {
+            this.liveRenderer.world = live.world;
+            this.liveRendererController = live;
+        } else {
+            this.liveRenderer?.delete();
+            this.liveRenderer = undefined;
+            this.liveRendererController = undefined;
+        }
+    }
+
+    // Multi-view: every pane is drawn into its own viewport of the one framebuffer, with its own
+    // camera, floor limit and live world, sharing the loaded map squares, the zone state, the
+    // textures and the baked entity models.
+    renderMulti(time: number, deltaTime: number, resized: boolean): void {
+        const multi = this.mapViewer.multi!;
+        const frameCount = this.stats.frameCount;
+        const timeSec = time / 1000;
+
+        const tick = Math.floor(timeSec / 0.6);
+        const ticksElapsed = Math.min(tick - this.lastTick, 1);
+        if (ticksElapsed > 0) {
+            this.lastTick = tick;
+        }
+        const clientTick = Math.floor(timeSec / 0.02);
+        const clientTicksElapsed = Math.min(clientTick - this.lastClientTick, 50);
+        if (clientTicksElapsed > 0) {
+            this.lastClientTick = clientTick;
+        }
+
+        if (this.needsFramebufferUpdate) {
+            this.initFramebuffer();
+        }
+        if (
+            !this.mainProgram ||
+            !this.mainAlphaProgram ||
+            !this.npcProgram ||
+            !this.entityProgram ||
+            !this.sceneUniformBuffer ||
+            !this.framebuffer ||
+            !this.textureFramebuffer ||
+            !this.frameDrawCall ||
+            !this.interactFramebuffer ||
+            !this.textureArray ||
+            !this.textureMaterials
+        ) {
+            return;
+        }
+        if (resized || this.needsFramebufferResize) {
+            this.framebuffer.resize();
+            this.textureFramebuffer.resize();
+            this.interactFramebuffer.resize();
+            this.resolutionUni[0] = this.app.width;
+            this.resolutionUni[1] = this.app.height;
+            this.needsFramebufferResize = false;
+        }
+
+        // Pane frames and overlays live in the overlay container, above the GL canvas.
+        const container = this.liveOverlay.canvas.parentElement;
+        if (container) {
+            this.liveOverlay.canvas.style.display = "none";
+            multi.attach(this.canvas, container);
+        }
+        const cssWidth = this.canvas.clientWidth;
+        const cssHeight = this.canvas.clientHeight;
+        multi.layout(cssWidth, cssHeight);
+        const scaleX = this.app.width / Math.max(cssWidth, 1);
+        const scaleY = this.app.height / Math.max(cssHeight, 1);
+
+        const inputManager = this.mapViewer.inputManager;
+        this.mapViewer.syncActivePane();
+        const active = multi.panes[multi.active];
+
+        if (multi.embedded) {
+            // The embedding page owns the panes: a click reports the pane (MultiView) and nothing
+            // moves a camera, opens a menu or stops a follow.
+            inputManager.takeWheelDelta();
+            this.mapViewer.menuX = -1;
+            this.mapViewer.menuY = -1;
+            if (this.hoveredMapIds.size > 0) {
+                this.hoveredMapIds.clear();
+            }
+        } else {
+            // Input drives the selected pane, the same way it drives the single view.
+            const camera = active.camera;
+            const cameraX = camera.pos[0];
+            const cameraY = camera.pos[1];
+            const cameraZ = camera.pos[2];
+            inputManager.guardTouchPan = active.live.isFollowing();
+            this.handleInput(deltaTime);
+            const wheelDelta = inputManager.takeWheelDelta();
+            if (active.live.isFollowing()) {
+                if (
+                    camera.pos[0] !== cameraX ||
+                    camera.pos[1] !== cameraY ||
+                    camera.pos[2] !== cameraZ
+                ) {
+                    active.live.unfollow();
+                } else {
+                    active.live.zoom(wheelDelta);
+                }
+            } else {
+                this.handleWheelInput(wheelDelta);
+            }
+        }
+
+        // One entity renderer draws every pane's world in turn. It is kept from the single view
+        // when that view became a pane, so no model is baked twice.
+        if (this.liveRenderer && this.liveRendererMulti !== multi) {
+            if (!multi.panes.some((p) => p.live === this.liveRendererController)) {
+                this.liveRenderer.delete();
+                this.liveRenderer = undefined;
+            }
+        }
+        this.liveRendererMulti = multi;
+        if (!this.liveRenderer) {
+            this.liveRenderer = new LiveEntityRenderer(
+                this.app,
+                this.entityProgram,
+                this.sceneUniformBuffer,
+                this.mapViewer.workerPool,
+                this.mapViewer.seqTypeLoader,
+                this.mapManager,
+                active.live.world,
+            );
+        }
+        const liveRenderer = this.liveRenderer;
+        this.liveRendererController = active.live;
+
+        this.mapManager.cacheBudget = SQUARE_CACHE;
+        const renderDistance = this.mapViewer.multiRenderDistance;
+        const fogDepth = Math.max(this.fogDepth, renderDistance / 8);
+        const viewports = multi.panes.map((p) => viewportRect(p.rect, cssHeight, scaleX, scaleY));
+        const cameras = multi.panes.map((p) => p.camera);
+        for (let i = 0; i < multi.panes.length; i++) {
+            const pane = multi.panes[i];
+            const live = pane.live;
+            live.maps = this.mapManager;
+            live.canvas = undefined;
+            live.update(clientTicksElapsed, pane.camera, renderDistance, this.getLiveGroundY);
+            // Each pane hides the floors above its own player. While that floor is unknown (the
+            // player is still being found) the pane keeps the last one.
+            let level = this.manualMaxLevel;
+            if ((this.followLevel || multi.embedded) && live.isFollowing()) {
+                level = live.getFollowedLevel() ?? pane.level ?? this.manualMaxLevel;
+            }
+            pane.level = level;
+            pane.camera.update(viewports[i].w, viewports[i].h);
+        }
+        this.updateWorldState();
+        const status = multi.updateStatus(this.getLiveGroundY);
+        if (status) {
+            postMultiStatus(status);
+        }
+
+        this.mapManager.updateMulti(
+            cameras,
+            frameCount,
+            renderDistance,
+            this.mapViewer.unloadDistance,
+        );
+
+        const currInteractions = this.interactions[frameCount % this.interactions.length];
+        if (!multi.embedded) {
+            // Hover menus and clicks resolve against the selected pane.
+            if (!inputManager.isPointerLock()) {
+                this.checkInteractions(currInteractions);
+            } else if (this.hoveredMapIds.size > 0) {
+                this.hoveredMapIds.clear();
+            }
+        }
+
+        if (this.cullBackFace) {
+            this.app.enable(PicoGL.CULL_FACE);
+        } else {
+            this.app.disable(PicoGL.CULL_FACE);
+        }
+        this.app.enable(PicoGL.DEPTH_TEST);
+        this.app.depthMask(true);
+        this.app.drawFramebuffer(this.framebuffer);
+        this.app.viewport(0, 0, this.app.width, this.app.height);
+        this.app.clearColor(0.0, 0.0, 0.0, 1.0);
+        this.app.clear();
+        // The gutters between panes.
+        this.gl.clearBufferfv(PicoGL.COLOR, 0, PANE_GUTTER_COLOR);
+
+        // With a feed the squares carry no cache npcs, so this texture stays empty.
+        this.npcRenderCount = 0;
+        const npcDataTextureIndex = this.updateNpcDataTexture();
+        const npcDataTexture = this.npcDataTextureBuffer[npcDataTextureIndex];
+
+        this.app.enable(PicoGL.SCISSOR_TEST);
+        for (let i = 0; i < multi.panes.length; i++) {
+            const pane = multi.panes[i];
+            const viewport = viewports[i];
+            this.app.viewport(viewport.x, viewport.y, viewport.w, viewport.h);
+            this.app.scissor(viewport.x, viewport.y, viewport.w, viewport.h);
+            this.gl.clearBufferfv(PicoGL.COLOR, 0, this.skyColor);
+
+            const paneCamera = pane.camera;
+            const paneLevel = pane.level ?? this.manualMaxLevel;
+            // The passes read the camera from the viewer (level of detail by distance).
+            this.mapViewer.camera = paneCamera;
+            this.cameraPosUni[0] = paneCamera.getPosX();
+            this.cameraPosUni[1] = paneCamera.getPosZ();
+            this.sceneUniformBuffer
+                .set(0, paneCamera.viewProjMatrix as Float32Array)
+                .set(1, paneCamera.viewMatrix as Float32Array)
+                .set(2, paneCamera.projectionMatrix as Float32Array)
+                .set(3, this.skyColor as Float32Array)
+                .set(4, this.cameraPosUni as Float32Array)
+                .set(5, renderDistance as any)
+                .set(6, fogDepth as any)
+                .set(7, timeSec as any)
+                .set(8, this.brightness as any)
+                .set(9, this.colorBanding as any)
+                .set(10, this.mapViewer.isNewTextureAnim as any)
+                .set(11, paneLevel as any)
+                .update();
+
+            this.mapManager.updateVisible(paneCamera, frameCount, renderDistance);
+            this.tickPass(timeSec, i === 0 ? ticksElapsed : 0, i === 0 ? clientTicksElapsed : 0);
+
+            liveRenderer.world = pane.live.world;
+            liveRenderer.showPlayers = pane.live.options.showPlayers;
+            liveRenderer.showNpcs = pane.live.options.showNpcs;
+            liveRenderer.prepare(paneLevel, paneCamera, renderDistance);
+            pane.farLabels = liveRenderer.farLabels.slice();
+
+            this.app.disable(PicoGL.BLEND);
+            this.renderOpaquePass();
+            this.renderOpaqueNpcPass(npcDataTextureIndex, npcDataTexture);
+            liveRenderer.render(false, this.textureArray, this.textureMaterials, this.drawBound);
+            this.app.enable(PicoGL.BLEND);
+            this.renderTransparentPass();
+            this.renderTransparentNpcPass(npcDataTextureIndex, npcDataTexture);
+            liveRenderer.render(true, this.textureArray, this.textureMaterials, this.drawBound);
+        }
+        this.app.disable(PicoGL.SCISSOR_TEST);
+        this.app.viewport(0, 0, this.app.width, this.app.height);
+        this.mapViewer.camera = active.camera;
+        liveRenderer.world = active.live.world;
+
+        // Can't sample from renderbuffer so blit to a texture for sampling.
+        this.app.readFramebuffer(this.framebuffer);
+        this.app.drawFramebuffer(this.textureFramebuffer);
+        this.gl.readBuffer(PicoGL.COLOR_ATTACHMENT0);
+        this.app.blitFramebuffer(PicoGL.COLOR_BUFFER_BIT);
+
+        if (!multi.embedded && !inputManager.isPointerLock()) {
+            const mouseX = inputManager.mouseX;
+            const mouseY = inputManager.mouseY;
+            if (mouseX !== -1 && mouseY !== -1) {
+                if (this.msaaEnabled) {
+                    this.app.drawFramebuffer(this.interactFramebuffer);
+                    this.gl.readBuffer(PicoGL.COLOR_ATTACHMENT1);
+                    this.app.blitFramebuffer(PicoGL.COLOR_BUFFER_BIT);
+                    this.app.readFramebuffer(this.interactFramebuffer);
+                    this.gl.readBuffer(PicoGL.COLOR_ATTACHMENT0);
+                } else {
+                    this.gl.readBuffer(PicoGL.COLOR_ATTACHMENT1);
+                }
+                currInteractions.read(
+                    this.gl,
+                    (mouseX * this.resolutionScale) | 0,
+                    (mouseY * this.resolutionScale) | 0,
+                );
+            }
+        }
+
+        this.app.disable(PicoGL.DEPTH_TEST);
+        this.app.depthMask(false);
+        this.app.disable(PicoGL.BLEND);
+        this.app.clearMask(PicoGL.COLOR_BUFFER_BIT | PicoGL.DEPTH_BUFFER_BIT);
+        this.app.clearColor(0.0, 0.0, 0.0, 1.0);
+        this.app.defaultDrawFramebuffer().clear();
+        if (this.frameFxaaDrawCall && this.fxaaEnabled) {
+            this.frameFxaaDrawCall.uniform("u_resolution", this.resolutionUni);
+            this.frameFxaaDrawCall.texture("u_frame", this.textureFramebuffer.colorAttachments[0]);
+            this.frameFxaaDrawCall.draw();
+        } else {
+            this.frameDrawCall.texture("u_frame", this.textureFramebuffer.colorAttachments[0]);
+            this.frameDrawCall.draw();
+        }
+
+        for (const pane of multi.panes) {
+            pane.overlay.draw(
+                pane.live,
+                pane.camera,
+                this.getLiveGroundY,
+                pane.level ?? this.manualMaxLevel,
+                renderDistance,
+                fogDepth,
+                pane.farLabels,
+            );
+        }
+
+        // Load new map squares: as many as fit in the upload budget, at least one per frame.
+        for (const uploadStart = performance.now(); ; ) {
+            const mapData = this.mapsToLoad.shift();
+            if (!mapData) {
+                break;
+            }
+            if (this.isValidMapData(mapData)) {
+                this.loadMap(
+                    this.mainProgram,
+                    this.mainAlphaProgram,
+                    this.npcProgram,
+                    this.textureArray,
+                    this.textureMaterials,
+                    this.sceneUniformBuffer,
+                    mapData,
+                    timeSec,
+                );
+            }
+            if (performance.now() - uploadStart > SQUARE_UPLOAD_BUDGET_MS) {
+                break;
+            }
         }
     }
 
@@ -1438,6 +1779,30 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         }
     }
 
+    // "View": open a new multi-view pane that follows this player (splits the single view). An
+    // embedding page owns the panes, so it gets no such entry.
+    addViewMenuEntry(
+        menuEntries: OsrsMenuEntry[],
+        id: number,
+        name: string,
+        combatLevel: number,
+    ): void {
+        if (EMBED || !this.mapViewer.canAddPane()) {
+            return;
+        }
+        menuEntries.push({
+            option: "View",
+            targetId: id,
+            targetType: MenuTargetType.PLAYER,
+            targetName: name,
+            targetLevel: combatLevel,
+            onClick: () => {
+                this.mapViewer.closeMenu();
+                this.mapViewer.addPane(name);
+            },
+        });
+    }
+
     checkInteractions(interactions: Interactions): void {
         const interactReady = interactions.check(
             this.gl,
@@ -1592,6 +1957,12 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                                         this.mapViewer.closeMenu();
                                     },
                                 });
+                                this.addViewMenuEntry(
+                                    menuEntries,
+                                    far.slot,
+                                    far.name,
+                                    far.combatLevel,
+                                );
                             }
                             continue;
                         }
@@ -1606,6 +1977,12 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                                 this.mapViewer.closeMenu();
                             },
                         });
+                        this.addViewMenuEntry(
+                            menuEntries,
+                            player.id,
+                            player.name,
+                            player.combatLevel,
+                        );
                         continue;
                     }
 

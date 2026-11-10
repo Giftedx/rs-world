@@ -38,6 +38,8 @@ const hidden = new Set<string>(
 let hiddenOrder: string[] = [...hidden];
 
 const from = params.get("hideNamesFrom");
+// False while the ?hideNamesFrom list is still on its way: until then no name is known to be safe to print.
+let hiddenSettled = !from;
 if (from) {
     fetch(from, { mode: "cors", cache: "no-store" })
         .then((r) => r.json())
@@ -48,6 +50,9 @@ if (from) {
         })
         .catch(() => {
             /* the dashboard is down: no extra hidden names */
+        })
+        .finally(() => {
+            hiddenSettled = true;
         });
 }
 
@@ -78,4 +83,38 @@ export function isNameHidden(name: string | undefined): boolean {
 export function resolveFollow(name: string): string | undefined {
     if (name !== MAIN_MARK) return name;
     return hiddenOrder[0];
+}
+
+// ?probe=1 puts the viewer on window.mapViewer, so a test page can read its state.
+export const PROBE = params.get("probe") === "1";
+
+// Multi-view (?multi=a,b,c or a {multi: [...]} message): several followed players in one frame.
+
+// The text a pane may print for the player it was asked to follow: nothing for a hidden name, for the
+// marker, and for any name while the hidden list has not arrived.
+export function paneLabel(asked: string | undefined): string {
+    if (!asked || asked === MAIN_MARK || !hiddenSettled || isNameHidden(asked)) return "";
+    return asked;
+}
+
+// The name a message to the embedding page may carry for a pane: a hidden name goes out as the marker.
+export function paneMessageName(asked: string): string {
+    return asked === MAIN_MARK || isNameHidden(asked) ? MAIN_MARK : asked;
+}
+
+export type MultiStatus = { names: string[]; shown: string[]; offline: string[] };
+
+let lastMultiStatus = "";
+// Tells the embedding page which of the asked names have their player on screen and which are not online
+// (a name in neither list is still being found). Posted when it changes; names stay in the asked order.
+export function postMultiStatus(status: MultiStatus): void {
+    const text = JSON.stringify(status);
+    if (text === lastMultiStatus) return;
+    lastMultiStatus = text;
+    if (window.parent !== window) window.parent.postMessage({ viewerMulti: status }, "*");
+}
+
+// A click or tap on a pane: the page can switch to a single follow of that player.
+export function postMultiPick(name: string, index: number): void {
+    if (window.parent !== window) window.parent.postMessage({ viewerMultiPick: name, index }, "*");
 }

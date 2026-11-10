@@ -175,7 +175,8 @@ export class LiveEntityRenderer {
         readonly workerPool: RenderDataWorkerPool,
         readonly seqTypeLoader: SeqTypeLoader,
         readonly mapManager: MapManager<WebGLMapSquare>,
-        readonly world: LiveWorld,
+        // Multi-view draws each pane's world in turn through the one renderer.
+        public world: LiveWorld,
     ) {}
 
     // Ground height at a fine coord in the RS convention (negative is up), or undefined when the

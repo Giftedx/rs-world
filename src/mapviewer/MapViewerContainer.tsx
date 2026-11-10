@@ -10,7 +10,8 @@ import { WorldMapModal } from "../components/rs/worldmap/WorldMapModal";
 import { InfoPanel } from "../live/InfoPanel";
 import { LiveOverlay } from "../live/LiveOverlay";
 import { LivePanel } from "../live/LivePanel";
-import { EMBED, isFloor } from "../live/embed";
+import { parseMultiDistance, parseMultiNames } from "../live/MultiLayout";
+import { EMBED, PROBE, isFloor } from "../live/embed";
 import { RS_TO_DEGREES } from "../rs/MathConstants";
 import { isMobileDevice, isTouchDevice } from "../util/DeviceUtil";
 import { MapViewer } from "./MapViewer";
@@ -52,13 +53,15 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
     const [fps, setFps] = useState(0);
     const [cameraYaw, setCameraYaw] = useState(mapViewer.camera.getYaw());
     const [isWorldMapOpen, setWorldMapOpen] = useState<boolean>(false);
+    // With several views the minimap would cover the top-left one, so it's hidden.
+    const [isMultiView, setMultiView] = useState<boolean>(false);
 
     const [menuProps, setMenuProps] = useState<OsrsMenuProps | undefined>(undefined);
 
     const requestRef = useRef<number | undefined>();
 
     useEffect(() => {
-        if (process.env.NODE_ENV === "development") {
+        if (process.env.NODE_ENV === "development" || PROBE) {
             // Handy for poking at live state from the devtools console. Use the renderer's
             // viewer: in StrictMode the app builds two viewers and the first one renders.
             (window as any).mapViewer = renderer.mapViewer;
@@ -77,6 +80,11 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
         const onMessage = (e: MessageEvent) => {
             const d = e.data;
             if (!d || typeof d !== "object") return;
+            // {multi: [names...]} shows those players side by side (at most 16); {multi: []} returns to the
+            // single view. {multiDistance: tiles} sets the panes' view distance.
+            const md = parseMultiDistance(d.multiDistance);
+            if (md !== undefined) renderer.mapViewer.setMultiDistance(md);
+            if (Array.isArray(d.multi)) renderer.mapViewer.setMulti(parseMultiNames(d.multi));
             const live = renderer.mapViewer.live;
             if (typeof d.follow === "string" && live) {
                 if (live.followName?.toLowerCase() !== d.follow.toLowerCase()) live.pendingFollow = d.follow;
@@ -108,6 +116,7 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
         }
 
         if (!hideUi) {
+            setMultiView(!!mapViewer.multi);
             setFps(Math.round(renderer.stats.frameTimeFps));
             setCameraYaw(mapViewer.camera.getYaw());
         }
@@ -231,13 +240,15 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
             {!hideUi && (
                 <span>
                     <div className="hud left-top">
-                        <MinimapContainer
-                            yawDegrees={(2047 - cameraYaw) * RS_TO_DEGREES}
-                            onCompassClick={resetCameraYaw}
-                            onWorldMapClick={openWorldMap}
-                            getPosition={getMapPosition}
-                            loadMapImageUrl={loadMinimapImageUrl}
-                        />
+                        {!isMultiView && (
+                            <MinimapContainer
+                                yawDegrees={(2047 - cameraYaw) * RS_TO_DEGREES}
+                                onCompassClick={resetCameraYaw}
+                                onWorldMapClick={openWorldMap}
+                                getPosition={getMapPosition}
+                                loadMapImageUrl={loadMinimapImageUrl}
+                            />
+                        )}
 
                         <div className="fps-counter content-text">{fps}</div>
                         <div className="fps-counter content-text">{mapViewer.debugText}</div>

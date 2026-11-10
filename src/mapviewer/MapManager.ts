@@ -2,6 +2,7 @@ import { vec4 } from "gl-matrix";
 
 import { MapFileIndex, getMapSquareId } from "../rs/map/MapFileIndex";
 import { Scene } from "../rs/scene/Scene";
+import { squareBounds, squaresNeeded } from "../live/MultiLayout";
 import { Camera } from "./Camera";
 
 function getMapDistance(x: number, z: number, mapX: number, mapY: number): number {
@@ -193,6 +194,7 @@ export class MapManager<T extends MapSquare> {
         const cameraX = camera.getPosX();
         const cameraZ = camera.getPosZ();
         this.frameCount = frameCount;
+        this.multiKey = "";
 
         // Calculate which map square id to start and end on based on camera location and render distance (in tiles).
         const mapStartX = Math.floor((cameraX - renderDistance) / Scene.MAP_SQUARE_SIZE);
@@ -297,7 +299,106 @@ export class MapManager<T extends MapSquare> {
         this.renderBounds[3] = mapEndY;
     }
 
+    // Multi-view: keep the squares every camera needs loaded (nearest to any camera first). What each
+    // camera sees is then picked with updateVisible().
+    private multiKey: string = "";
+    private multiWanted: number[] = [];
+
+    updateMulti(
+        cameras: Camera[],
+        frameCount: number,
+        renderDistance: number,
+        unloadDistance: number,
+    ): void {
+        this.frameCount = frameCount;
+        this.blankOnScreen = 0;
+        const bounds = cameras.map((c) => squareBounds(c.getPosX(), c.getPosZ(), renderDistance));
+        const key = bounds.map((b) => b.join(",")).join(";");
+        if (key !== this.multiKey) {
+            this.multiKey = key;
+            // The single view's bounds are stale now: it works them out again when it comes back.
+            this.renderBounds.fill(-1);
+            this.multiWanted = squaresNeeded(
+                cameras.map((c) => [c.getPosX(), c.getPosZ()] as const),
+                renderDistance,
+                (mapId) => this.invalidMapIds.has(mapId),
+            );
+
+            // Squares no camera is near are kept while the cache has room, like update().
+            const out: number[] = [];
+            for (const [id, map] of this.mapSquares) {
+                const { mapX, mapY } = map;
+                const near = bounds.some(
+                    ([startX, startY, endX, endY]) =>
+                        mapX >= startX - unloadDistance &&
+                        mapX <= endX + unloadDistance &&
+                        mapY >= startY - unloadDistance &&
+                        mapY <= endY + unloadDistance,
+                );
+                if (!near) {
+                    out.push(id);
+                }
+            }
+            const excess =
+                this.mapSquares.size - Math.max(this.cacheBudget, this.mapSquares.size - out.length);
+            if (excess > 0) {
+                out.sort((a, b) => (this.lastUsed.get(a) ?? 0) - (this.lastUsed.get(b) ?? 0));
+                for (const id of out.slice(0, excess)) {
+                    this.removeMap(id >> 8, id & 0xff);
+                    this.lastUsed.delete(id);
+                }
+            }
+        }
+        for (const mapId of this.multiWanted) {
+            if (this.loadingMapIds.size > this.maxQueuedTasks) {
+                break;
+            }
+            if (!this.mapSquares.has(mapId)) {
+                this.loadMap(mapId >> 8, mapId & 0xff);
+            }
+        }
+    }
+
+    // The squares one camera sees, into visibleMaps (nearest first). Squares it should see that are
+    // not drawable yet add to blankOnScreen.
+    updateVisible(camera: Camera, frameCount: number, renderDistance: number): void {
+        const cameraX = camera.getPosX();
+        const cameraZ = camera.getPosZ();
+        const [startX, startY, endX, endY] = squareBounds(cameraX, cameraZ, renderDistance);
+        this.visibleMapCount = 0;
+        for (let x = startX; x < endX; x++) {
+            for (let y = startY; y < endY; y++) {
+                if (x < 0 || y < 0 || x >= MapManager.MAX_MAP_X || y >= MapManager.MAX_MAP_Y) {
+                    continue;
+                }
+                const mapId = getMapSquareId(x, y);
+                if (this.invalidMapIds.has(mapId) || !this.isMapVisible(camera, x, y)) {
+                    continue;
+                }
+                const mapSquare = this.mapSquares.get(mapId);
+                if (!mapSquare) {
+                    this.blankOnScreen++;
+                    continue;
+                }
+                this.lastUsed.set(mapId, ++this.useClock);
+                if (mapSquare.canRender(frameCount)) {
+                    this.visibleMaps[this.visibleMapCount++] = mapSquare;
+                } else {
+                    this.blankOnScreen++;
+                }
+            }
+        }
+        this.visibleMaps.length = this.visibleMapCount;
+        this.visibleMaps.sort(
+            (a, b) =>
+                getMapDistance(cameraX, cameraZ, a.mapX, a.mapY) -
+                getMapDistance(cameraX, cameraZ, b.mapX, b.mapY),
+        );
+    }
+
     cleanUp(): void {
+        this.multiKey = "";
+        this.multiWanted = [];
         this.renderBounds.fill(-1);
         this.clearMaps();
     }

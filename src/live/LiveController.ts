@@ -9,14 +9,14 @@ import { LiveEntity, LivePlayer } from "./LiveEntity";
 import { LiveWorld } from "./LiveWorld";
 import { FeedStatus, WorldFeedClient } from "./WorldFeedClient";
 import { WorldState } from "./WorldState";
-import { RosterPlayer } from "./protocol";
+import { FeedRoster, RosterPlayer } from "./protocol";
 import { EMBED, EMBED_FOLLOW_DISTANCE, EMBED_FOLLOW_PITCH, FLIGHT, postTiming, resolveFollow } from "./embed";
 import { CameraFlight, MapAccess } from "./CameraFlight";
 
 // Tiles streamed around the camera; the engine caps a subscription at 384 x 384, which a radius
 // of 188 plus the grid padding fills exactly. Past that, players come from the roster instead.
 const MIN_AREA_RADIUS = 32;
-const MAX_AREA_RADIUS = 188;
+export const MAX_AREA_RADIUS = 188;
 // Re-subscribe only when the camera crosses an 8-tile grid line.
 const AREA_GRID = 8;
 
@@ -106,6 +106,7 @@ export class LiveController {
         seqFrameLoader: SeqFrameLoader,
         spotAnimTypeLoader: TypeLoader<SpotAnimType> | undefined,
         readonly worldState?: WorldState,
+        roster: boolean = true,
     ) {
         this.world = new LiveWorld(
             npcTypeLoader,
@@ -132,6 +133,14 @@ export class LiveController {
             },
             onRoster: (roster) => {
                 this.world.applyRoster(roster);
+                if (this.rosterListeners.length > 0) {
+                    const full = this.rosterSnapshot();
+                    if (full) {
+                        for (const listener of this.rosterListeners) {
+                            listener(full);
+                        }
+                    }
+                }
                 this.version++;
             },
             onStatus: (status, error) => {
@@ -140,8 +149,26 @@ export class LiveController {
                 this.version++;
             },
         });
-        this.feed.setRoster(true);
+        // Multi-view panes share one roster subscription (see rosterListeners).
+        this.feed.setRoster(roster);
     }
+
+    rosterListeners: ((roster: FeedRoster) => void)[] = [];
+
+    // The roster this controller holds, as a full roster message. The feed sends changes after the
+    // first roster, so another pane's world can only take the whole list.
+    rosterSnapshot(): FeedRoster | undefined {
+        const world = this.world;
+        if (world.rosterTick === -1) {
+            return undefined;
+        }
+        return { t: "roster", k: world.rosterTick, p: world.rosterPlayers, npcs: world.rosterNpcCount };
+    }
+
+    // Largest feed area radius in tiles; multi-view panes ask for less than a full view.
+    maxAreaRadius: number = MAX_AREA_RADIUS;
+    // False in a multi-view pane: a follow change jumps there, with no flight and no timing report.
+    flights: boolean = true;
 
     stop(): void {
         this.feed.close();
@@ -203,7 +230,7 @@ export class LiveController {
 
         // Seeing further than the engine will stream: the half behind the camera is mostly off
         // screen, so slide the area forward, up to half its size (less when looking down).
-        const radius = clamp(renderDistance, MIN_AREA_RADIUS, MAX_AREA_RADIUS);
+        const radius = clamp(renderDistance, MIN_AREA_RADIUS, this.maxAreaRadius);
         const ahead =
             clamp(renderDistance - MAX_AREA_RADIUS, 0, MAX_AREA_RADIUS / 2) *
             Math.cos(camera.pitch * RS_TO_RADIANS);
@@ -237,7 +264,7 @@ export class LiveController {
         // Already following someone else: fly there. From free camera fly too, once the scene has squares to
         // hold on screen; the first follow of an empty scene (page load) jumps straight in.
         const fly = this.followName === undefined ? (this.maps?.visibleMapCount ?? 0) > 0 : this.followName.toLowerCase() !== name.toLowerCase();
-        if (target && FLIGHT && fly) {
+        if (target && FLIGHT && fly && this.flights) {
             this.flight?.cancel();
             this.flight = new CameraFlight(camera, target.x, target.z, EMBED ? EMBED_FOLLOW_DISTANCE : FOLLOW_DISTANCE, EMBED ? EMBED_FOLLOW_PITCH : FOLLOW_PITCH, this.canvas);
             this.timing = { mode: "flight", start: performance.now(), tiles: this.flight.distance, frames: 0, blankFrames: 0, holdFrames: 0 };
@@ -247,7 +274,7 @@ export class LiveController {
             this.version++;
             return;
         }
-        if (target && this.followName !== undefined) {
+        if (target && this.followName !== undefined && this.flights) {
             this.timing = { mode: "snap", start: performance.now(), tiles: Math.hypot(target.x - camera.getPosX(), target.z - camera.getPosZ()), frames: 0, blankFrames: 0, holdFrames: 0 };
         }
         if (visible) {
