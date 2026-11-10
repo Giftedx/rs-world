@@ -25,9 +25,10 @@ WebFont.load({
 
 const cachesPromise = fetchCacheList();
 
-// Without shared memory each worker receives its own copy of the cache.
+// Without shared memory each worker receives its own copy of the cache, so such a page gets two workers:
+// with prewarmed squares they serve a follow change as fast as four, for one cache copy more.
 const workerPool = RenderDataWorkerPool.create(
-    isWallpaperEngine || !isSharedMemorySupported ? 1 : isTouchDevice ? 2 : 4,
+    isWallpaperEngine ? 1 : !isSharedMemorySupported || isTouchDevice ? 2 : 4,
 );
 
 function MapViewerApp() {
