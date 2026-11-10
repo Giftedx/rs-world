@@ -17,7 +17,10 @@ import {
     parseMultiDistance,
     parseMultiNames,
     parseRatio,
+    parseShares,
+    parseStrip,
     reorderBy,
+    sameShares,
     shrunkRect,
     squareBounds,
     squaresNeeded,
@@ -492,5 +495,69 @@ describe("squaresNeeded", () => {
         const ids = squaresNeeded(cameras, 48);
         expect(ids.length).toBeLessThanOrEqual(16 * 9);
         expect(new Set(ids).size).toBe(ids.length);
+    });
+});
+
+describe("row, column and strip shares", () => {
+    test("shares are parts of 1; a share under a quarter of an even one is not taken", () => {
+        expect(parseShares([1, 3])).toEqual([0.25, 0.75]);
+        expect(parseShares([])).toEqual([]);
+        expect(parseShares([1, 9])).toBeUndefined();
+        expect(parseShares([1, "2"])).toBeUndefined();
+        expect(parseShares([1, 0])).toBeUndefined();
+        expect(parseShares(new Array(17).fill(1))).toBeUndefined();
+        expect(parseShares("1,2")).toBeUndefined();
+        expect(parseStrip(0.3)).toBe(0.3);
+        expect(parseStrip(0)).toBe(0);
+        expect(parseStrip(0.5)).toBeUndefined();
+        expect(sameShares(undefined, [])).toBe(true);
+        expect(sameShares([0.5, 0.5], [0.5, 0.5])).toBe(true);
+        expect(sameShares([0.4, 0.6], [0.5, 0.5])).toBe(false);
+    });
+
+    test("grid: rows and columns take their shares, neighbours stay one gap apart", () => {
+        const options = { ...layout("grid"), rowShares: [0.25, 0.75], colShares: [0.6, 0.4] };
+        const rects = tileRects(4, 1004, 804, options);
+        expect(rects).toEqual([
+            { x: 0, y: 0, w: 600, h: 200 },
+            { x: 604, y: 0, w: 400, h: 200 },
+            { x: 0, y: 204, w: 600, h: 600 },
+            { x: 604, y: 204, w: 400, h: 600 },
+        ]);
+    });
+
+    test("a list of another length than the layout has rows or columns leaves them even", () => {
+        const even = tileRects(5, 1280, 720, layout("grid"));
+        const options = { ...layout("grid"), rowShares: [0.2, 0.3, 0.5], colShares: [0.5, 0.5] };
+        expect(tileRects(5, 1280, 720, options)).toEqual(even);
+        // The stretched last row has two panes, the full row three: only the full row takes shares.
+        const sized = tileRects(5, 1280, 720, { ...layout("grid"), colShares: [0.5, 0.25, 0.25] });
+        expect(sized[0].w).toBe(636);
+        expect(sized.slice(3)).toEqual(even.slice(3));
+    });
+
+    test("columns take the column shares; the focus strip takes the strip share", () => {
+        const columns = tileRects(3, 1208, 600, {
+            ...layout("columns"),
+            colShares: [0.5, 0.25, 0.25],
+        });
+        expect(columns.map((r) => r.w)).toEqual([600, 300, 300]);
+        const focus = tileRects(4, 1000, 800, { ...layout("focus"), stripShare: 0.25 });
+        expect(focus[0]).toEqual({ x: 0, y: 0, w: 1000, h: 596 });
+        expect(focus.slice(1).every((r) => r.y === 600 && r.h === 200)).toBe(true);
+    });
+
+    test("with shares no pane overlaps another or leaves the window", () => {
+        for (const [width, height] of WINDOWS) {
+            const options = { ...layout("grid"), rowShares: [0.7, 0.3], colShares: [0.2, 0.8] };
+            const rects = tileRects(4, width, height, options);
+            for (let i = 0; i < rects.length; i++) {
+                expect(rects[i].x + rects[i].w).toBeLessThanOrEqual(width);
+                expect(rects[i].y + rects[i].h).toBeLessThanOrEqual(height);
+                for (let j = i + 1; j < rects.length; j++) {
+                    expect(overlaps(rects[i], rects[j])).toBe(false);
+                }
+            }
+        }
     });
 });
