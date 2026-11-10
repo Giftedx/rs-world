@@ -56,6 +56,10 @@ const RESOLUTION_OPTIONS: Record<string, number> = {
 const MAX_TEXTURES = 2048;
 const TEXTURE_SIZE = 128;
 
+// Time a frame may spend on map square uploads. One square per frame limits a follow change to
+// 20 squares a second at 20 frames a second.
+const SQUARE_UPLOAD_BUDGET_MS = 6;
+
 const INTERACT_BUFFER_COUNT = 2;
 const INTERACTION_RADIUS = 5;
 
@@ -1037,19 +1041,27 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             );
         }
 
-        // Load new map squares
-        const mapData = this.mapsToLoad.shift();
-        if (mapData && this.isValidMapData(mapData)) {
-            this.loadMap(
-                this.mainProgram,
-                this.mainAlphaProgram,
-                this.npcProgram,
-                this.textureArray,
-                this.textureMaterials,
-                this.sceneUniformBuffer,
-                mapData,
-                timeSec,
-            );
+        // Load new map squares: as many as fit in the upload budget, at least one per frame.
+        for (const uploadStart = performance.now(); ; ) {
+            const mapData = this.mapsToLoad.shift();
+            if (!mapData) {
+                break;
+            }
+            if (this.isValidMapData(mapData)) {
+                this.loadMap(
+                    this.mainProgram,
+                    this.mainAlphaProgram,
+                    this.npcProgram,
+                    this.textureArray,
+                    this.textureMaterials,
+                    this.sceneUniformBuffer,
+                    mapData,
+                    timeSec,
+                );
+            }
+            if (performance.now() - uploadStart > SQUARE_UPLOAD_BUDGET_MS) {
+                break;
+            }
         }
 
         if (showDebugTimer) {
