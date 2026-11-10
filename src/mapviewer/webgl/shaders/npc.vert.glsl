@@ -134,4 +134,8 @@ void main() {
     gl_Position.z += float(npcInfo.plane) * 0.005 + (float(vertex.priority) + 20.0) * 0.0007;
     gl_Position = u_projectionMatrix * gl_Position;
     // gl_Position.z -= float(modelInfo.plane) * 0.0005 + (float(vertex.priority) + float(modelInfo.priority)) * 0.00007;
+    if (float(npcInfo.plane) > u_maxPlane) {
+        // Above the floor limit: outside the clip volume.
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    }
 }
