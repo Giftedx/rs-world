@@ -23,7 +23,8 @@ new. See [DESIGN.md](DESIGN.md) for how it works.
   Zooming out sees further and streams more of the world.
 - **Pan**: right-drag slides the camera over the ground. A right click without dragging opens the menu.
 - **Touch**: one-finger drag rotates, two-finger drag pans and pinch zooms, like drag, right-drag and the
-  wheel. The joystick at the bottom left moves the camera too.
+  wheel. The joystick at the bottom left moves the camera too. While following, a one-finger drag orbits
+  the player and a pinch changes the orbit distance; a two-finger drag stops following, as a right-drag does.
 - **World map**: every online player as a dot (white, your followed player orange). Click one to fly there.
 
 ## Running locally
