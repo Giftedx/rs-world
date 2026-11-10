@@ -85,6 +85,12 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
             if (typeof d.scale === "number" && d.scale > 0) renderer.resolutionScale = d.scale;
             // Roof removal: the page names the highest floor to draw.
             if (isFloor(d.maxLevel)) renderer.setFloorLimit(d.maxLevel);
+            // {warm: [[x, z], ...]} lists the places the page may follow next.
+            if (Array.isArray(d.warm)) {
+                const isTile = (t: unknown): t is [number, number] =>
+                    Array.isArray(t) && Number.isFinite(t[0]) && Number.isFinite(t[1]);
+                renderer.setWarmTiles(d.warm.filter(isTile).slice(0, 16));
+            }
         };
         window.addEventListener("message", onMessage);
         return () => window.removeEventListener("message", onMessage);

@@ -82,6 +82,9 @@ export class LiveController {
     // Follow changes fly the camera (CameraFlight) instead of cutting; the renderer hands over map loading and
     // its canvas (for the warp blur).
     private flight?: CameraFlight;
+    get inFlight(): boolean {
+        return this.flight !== undefined;
+    }
     maps?: MapAccess;
     canvas?: HTMLElement;
     // ?flight=0: time from a follow change until the destination squares are loaded.
