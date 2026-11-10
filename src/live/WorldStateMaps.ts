@@ -2,6 +2,7 @@ import { MapManager } from "../mapviewer/MapManager";
 import { WebGLMapSquare } from "../mapviewer/webgl/WebGLMapSquare";
 import { getLocalLocKey } from "../mapviewer/webgl/loader/SdLocTable";
 import { LocTypeLoader } from "../rs/config/loctype/LocTypeLoader";
+import { ObjTypeLoader } from "../rs/config/objtype/ObjTypeLoader";
 import { LiveEntityRenderer, getGroundHeight } from "./LiveEntityRenderer";
 import { StaticLoc, WorldState, getLocKey, hidesStaticLoc } from "./WorldState";
 
@@ -23,6 +24,7 @@ export class WorldStateMaps {
         state: WorldState | undefined,
         renderer: LiveEntityRenderer | undefined,
         locTypeLoader: LocTypeLoader,
+        objTypeLoader: ObjTypeLoader,
     ): void {
         if (state !== this.state) {
             this.unbind();
@@ -41,6 +43,7 @@ export class WorldStateMaps {
         if (renderer) {
             renderer.worldState = state;
             renderer.locTypeLoader = locTypeLoader;
+            renderer.objTypeLoader = objTypeLoader;
             renderer.getStaticLoc = this.getStaticLoc;
         }
         state?.update();
