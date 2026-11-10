@@ -180,7 +180,7 @@ export class LiveController {
         }
 
         if (this.flight) {
-            if (this.flight.step(camera, this.maps, renderDistance)) {
+            if (this.flight.step(camera, this.maps)) {
                 this.flight = undefined;
                 this.orbitDistance = EMBED ? EMBED_FOLLOW_DISTANCE : FOLLOW_DISTANCE;
             }
@@ -234,8 +234,10 @@ export class LiveController {
         const visible = this.world.findPlayer(name);
         const entry = this.world.rosterPlayers.find((p) => p[1].toLowerCase() === name.toLowerCase());
         const target = visible ? { x: visible.x / 128, z: visible.z / 128 } : entry ? { x: entry[2] + 0.5, z: entry[3] + 0.5 } : undefined;
-        // Already following someone: fly there. The first follow (page load) still jumps straight in.
-        if (target && FLIGHT && this.followName !== undefined && this.followName.toLowerCase() !== name.toLowerCase()) {
+        // Already following someone else: fly there. From free camera fly too, once the scene has squares to
+        // hold on screen; the first follow of an empty scene (page load) jumps straight in.
+        const fly = this.followName === undefined ? (this.maps?.visibleMapCount ?? 0) > 0 : this.followName.toLowerCase() !== name.toLowerCase();
+        if (target && FLIGHT && fly) {
             this.flight?.cancel();
             this.flight = new CameraFlight(camera, target.x, target.z, EMBED ? EMBED_FOLLOW_DISTANCE : FOLLOW_DISTANCE, EMBED ? EMBED_FOLLOW_PITCH : FOLLOW_PITCH, this.canvas);
             this.timing = { mode: "flight", start: performance.now(), tiles: this.flight.distance, frames: 0, blankFrames: 0, holdFrames: 0 };
