@@ -21,6 +21,11 @@ new. See [DESIGN.md](DESIGN.md) for how it works.
   While following, drag (or the arrow keys) orbits the player and the wheel zooms; moving the camera
   (WASD, Q/E, right-drag) stops following. Otherwise the wheel flies the camera forward and back.
   Zooming out sees further and streams more of the world.
+- **Multi-view**: watch up to 16 players at once. **+ View** in the Live panel (or right-click a
+  player → View) splits the screen; each view follows its own player, with a name box and **×** in
+  its bottom-left corner. Click a view to select it: the Live panel, keys, drag and wheel then act on
+  that view. Closing views down to one returns to the normal single view. All views share one WebGL
+  renderer, cache, worker pool, map squares and baked models; each view has its own feed connection.
 - **Pan**: right-drag slides the camera over the ground. A right click without dragging opens the menu.
 - **Touch**: one-finger drag rotates, two-finger drag pans and pinch zooms, like drag, right-drag and the
   wheel. The joystick at the bottom left moves the camera too. While following, a one-finger drag orbits
@@ -61,6 +66,8 @@ That only works if that server runs with `WORLD_FEED=true`.
 | ---------------------- | --------------------------------------------------------------------------- |
 | `live=<ws url>`        | World feed to stream (URL-encode it if it carries `?token=`). `off` disables it. |
 | `follow=<name>`        | Fly to a player and keep following them.                                    |
+| `multi=<a,b,...>`      | Open multi-view with up to 16 players, one view each.                       |
+| `md=<tiles>`           | Multi-view distance per view, 16-128 (default 48).                          |
 | `cx cy cz p y v=1`     | Camera position, pitch and yaw, same as osrs.world.                         |
 
 The Live panel (bottom right) shows connection state, the online count and every player (scroll for more). Info, under
@@ -73,6 +80,25 @@ iPhone and iPad browsers can load the viewer when WebGL2 is available. Touch con
 joystick and gestures on the scene (see Touch above). On mobile, the player list and Info button sit at the
 top right, and the render settings menu is hidden. Browsers without shared memory use one worker with
 an ordinary copy of the cache; cross-origin isolation is still recommended for lower memory use.
+
+### Multi-view in an embedding page
+
+With `?embed=1` the page owns the views. It sets them with `?multi=a,b,c` at load or with a message, and
+the viewer answers with messages to `window.parent`:
+
+| Message                                              | Direction | Meaning                                                                 |
+| ---------------------------------------------------- | --------- | ----------------------------------------------------------------------- |
+| `{multi: ["a", "b", ...]}`                           | to viewer | Show these players, one view each (at most 16). Views that already follow an asked player keep their feed. |
+| `{multi: []}`                                        | to viewer | Return to the single view.                                              |
+| `{multiDistance: 48}`                                | to viewer | View distance per view in tiles, 16-128.                                |
+| `{viewerMulti: {names, shown, offline}}`             | to page   | `names` in the asked order; `shown` have their player on screen; `offline` are not online. A name in neither list is still being found. Sent when it changes; all three are empty after `{multi: []}`. |
+| `{viewerMultiPick: "<name>", index: <view number>}`  | to page   | A click or tap on a view. The viewer does nothing else with it.         |
+
+Each view hides the floors above its own player. A view prints its player's name in its bottom-left
+corner, except for a hidden name (`hideNames`, `hideNamesFrom`): that view has no label, the name is
+not drawn over the player, and messages carry the marker `⟦MAIN⟧` in its place. The marker can also
+be asked for in `multi`, as in `follow`. A view of a player who is not online starts to follow them
+when they log in. Camera input is off in the views of an embedding page.
 
 ## Deploying
 
