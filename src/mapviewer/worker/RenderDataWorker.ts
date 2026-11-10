@@ -166,6 +166,7 @@ async function initWorker(cache: LoadedCache, npcSpawns: NpcSpawn[]): Promise<Wo
                 varManager,
             ),
             locModelLoader,
+            objModelLoader,
         );
     }
 

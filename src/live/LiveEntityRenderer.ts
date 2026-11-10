@@ -15,6 +15,8 @@ import { InteractType } from "../mapviewer/webgl/InteractType";
 import { WebGLMapSquare } from "../mapviewer/webgl/WebGLMapSquare";
 import { RenderDataWorkerPool } from "../mapviewer/worker/RenderDataWorkerPool";
 import { LocTypeLoader } from "../rs/config/loctype/LocTypeLoader";
+import { ObjStackability } from "../rs/config/objtype/ObjStackability";
+import { ObjTypeLoader } from "../rs/config/objtype/ObjTypeLoader";
 import { SeqTypeLoader } from "../rs/config/seqtype/SeqTypeLoader";
 import { EntityAnimData, EntityModelSpec } from "./EntityModelLoader";
 import { FAR_PLAYER_APPEARANCE, FAR_PLAYER_MODEL_KEY } from "./FarPlayers";
@@ -22,6 +24,7 @@ import { LiveEntity, LiveNpc, LivePlayer } from "./LiveEntity";
 import { LiveWorld } from "./LiveWorld";
 import {
     LOC_LAYER_GROUND,
+    ObjTile,
     StaticLoc,
     StaticLocLookup,
     WorldState,
@@ -37,6 +40,8 @@ const MAX_INSTANCES = 4096;
 const MAX_PAGE_BYTES = 192 * 1024 * 1024;
 const PAGE_IDLE_MS = 2000;
 const EVICT_INTERVAL_MS = 500;
+// How often obj stacks on squares that weren't loaded are looked at again.
+const OBJ_GROUND_RETRY_MS = 500;
 // Detail by distance from the camera, in tiles (a player is about 15px tall at 48 on a 1000px
 // canvas), so a zoomed-out crowd bakes and draws few pages. Past DETAIL_DISTANCE players drop
 // their own colours (from 24 while GPU memory is tight). Past POSE_DISTANCE every player is the
@@ -75,6 +80,19 @@ class EntityAnimPage {
         this.indexBuffer.delete();
     }
 }
+
+// A ground obj to draw (see addObjDraws): model is the obj type drawn (the count variant), id
+// the obj type itself.
+type ObjDraw = {
+    key: string;
+    model: number;
+    id: number;
+    level: number;
+    x: number;
+    y: number;
+    z: number;
+    plane: number;
+};
 
 type PageState = EntityAnimPage | "loading" | "failed";
 
@@ -120,14 +138,24 @@ export class LiveEntityRenderer {
     showPlayers: boolean = true;
     showNpcs: boolean = true;
 
-    // Zone state (dynamic locs, projectiles, map anims).
+    // Zone state (dynamic locs, ground objs, projectiles, map anims).
     worldState?: WorldState;
     locTypeLoader?: LocTypeLoader;
+    objTypeLoader?: ObjTypeLoader;
     getStaticLoc?: StaticLocLookup;
     // Reused render items for the zone state, so drawing it allocates nothing per frame.
     private itemPool: RenderItem[] = [];
     private itemPoolUsed: number = 0;
     private staticLoc: StaticLoc = { id: -1, shape: 0, angle: 0, raise: 0 };
+    // Ground obj stacks to draw, rebuilt only when what they depend on changes.
+    private objDraws: ObjDraw[] = [];
+    private objDrawsState?: WorldState;
+    private objDrawsVersion: number = -1;
+    private objDrawsLocVersion: number = -1;
+    private objDrawsSquares: number = -1;
+    private objDrawsAt: number = 0;
+    private objDrawsMissing: boolean = false;
+    private objPageKeys: Map<number, string> = new Map();
 
     private now: number = 0;
     private lastEvictAt: number = 0;
@@ -372,7 +400,7 @@ export class LiveEntityRenderer {
     }
 
     // What a logged-in player sees of the zones besides players and npcs: changed and added
-    // locs, map anims and projectiles, each on the view's floors only.
+    // locs, ground obj stacks, map anims and projectiles, each on the view's floors only.
     private addWorldState(state: WorldState, maxLevel: number, renderDistance: number): void {
         for (const loc of state.locs.values()) {
             if (loc.level > maxLevel || this.items.length >= MAX_INSTANCES) {
@@ -414,6 +442,11 @@ export class LiveEntityRenderer {
             }
         }
 
+        // Nothing to do against a server that sends no ground objs.
+        if (state.objTiles.size > 0 || this.objDraws.length > 0) {
+            this.addObjDraws(state, maxLevel, renderDistance);
+        }
+
         for (const anim of state.mapAnims) {
             if (!anim.placed || anim.level > maxLevel || state.loopCycle < anim.startCycle) {
                 continue;
@@ -447,6 +480,136 @@ export class LiveEntityRenderer {
                 this.pushItem(page, frame, x, y, z, yaw, pitch, level, 0, InteractType.NONE);
             }
         }
+    }
+
+    // Objs on a table: the client raises the stack by the height of a ground loc that supports
+    // items (the static loc on the tile's origin, unless the zone state removed or replaced it).
+    private getObjRaise(state: WorldState, tile: ObjTile): number {
+        const out = this.staticLoc;
+        const found = this.getStaticLoc?.(tile.x, tile.z, tile.level, LOC_LAYER_GROUND, out);
+        if (!found || out.raise === 0) {
+            return 0;
+        }
+        const override = state.locs.get(getLocKey(tile.x, tile.z, tile.level, LOC_LAYER_GROUND));
+        if (override && hidesStaticLoc(override, out)) {
+            return 0;
+        }
+        return out.raise;
+    }
+
+    // Ground obj stacks: which objs show, their models and heights change only with the objs, the
+    // locs or the loaded squares, so they are worked out then; each frame just draws the list.
+    private addObjDraws(state: WorldState, maxLevel: number, renderDistance: number): void {
+        const squares = this.mapManager.mapSquares.size;
+        if (
+            state !== this.objDrawsState ||
+            state.objVersion !== this.objDrawsVersion ||
+            state.locVersion !== this.objDrawsLocVersion ||
+            squares !== this.objDrawsSquares ||
+            (this.objDrawsMissing && this.now - this.objDrawsAt > OBJ_GROUND_RETRY_MS)
+        ) {
+            this.objDrawsState = state;
+            this.objDrawsVersion = state.objVersion;
+            this.objDrawsLocVersion = state.locVersion;
+            this.objDrawsSquares = squares;
+            this.objDrawsAt = this.now;
+            this.objDrawsMissing = false;
+            this.objDraws.length = 0;
+            for (const tile of state.objTiles.values()) {
+                const fineX = (tile.x << 7) + 64;
+                const fineZ = (tile.z << 7) + 64;
+                const ground = this.getGroundHeight(tile.level, fineX, fineZ);
+                if (ground) {
+                    const y = ground.y - this.getObjRaise(state, tile);
+                    this.addObjStack(tile, fineX, y, fineZ, ground.plane);
+                } else {
+                    // Its square isn't loaded yet.
+                    this.objDrawsMissing = true;
+                }
+            }
+        }
+        for (const draw of this.objDraws) {
+            if (draw.level > maxLevel || this.items.length >= MAX_INSTANCES) {
+                continue;
+            }
+            if (this.isOutOfRange(draw.x, draw.z, renderDistance)) {
+                continue;
+            }
+            const page = this.requestPage(draw.key, { kind: "obj", obj: draw.model }, -1);
+            if (page) {
+                const { x, y, z } = draw;
+                this.pushItem(page, 0, x, y, z, 0, 0, draw.plane, draw.id, InteractType.OBJ);
+            }
+        }
+    }
+
+    // Port of Client.showObject: the most valuable obj on top, then up to two of other types.
+    private addObjStack(tile: ObjTile, x: number, y: number, z: number, plane: number): void {
+        const objTypeLoader = this.objTypeLoader;
+        if (!objTypeLoader) {
+            return;
+        }
+        const objs = tile.objs;
+        let top = -1;
+        let topCost = -99999999;
+        for (let i = 0; i < objs.length; i++) {
+            const type = objTypeLoader.load(objs[i].id);
+            let cost = type.price;
+            if (type.stackability === ObjStackability.ALWAYS) {
+                cost *= objs[i].count + 1;
+            }
+            if (cost > topCost) {
+                topCost = cost;
+                top = i;
+            }
+        }
+        if (top === -1) {
+            return;
+        }
+        const topId = objs[top].id;
+        let bottom = -1;
+        let middle = -1;
+        for (let i = 0; i < objs.length; i++) {
+            const id = objs[i].id;
+            if (id === topId) {
+                continue;
+            }
+            if (bottom === -1) {
+                bottom = i;
+            } else if (middle === -1 && id !== objs[bottom].id) {
+                middle = i;
+            }
+        }
+        const level = tile.level;
+        this.addObjDraw(objTypeLoader, objs[top].id, objs[top].count, level, x, y, z, plane);
+        if (middle !== -1) {
+            const obj = objs[middle];
+            this.addObjDraw(objTypeLoader, obj.id, obj.count, level, x, y, z, plane);
+        }
+        if (bottom !== -1) {
+            const obj = objs[bottom];
+            this.addObjDraw(objTypeLoader, obj.id, obj.count, level, x, y, z, plane);
+        }
+    }
+
+    private addObjDraw(
+        objTypeLoader: ObjTypeLoader,
+        id: number,
+        count: number,
+        level: number,
+        x: number,
+        y: number,
+        z: number,
+        plane: number,
+    ): void {
+        // The type's count variant (coins pile up, arrows bundle) like ObjType.getModelLit.
+        const model = objTypeLoader.load(id).getCountObj(objTypeLoader, count).id;
+        let key = this.objPageKeys.get(model);
+        if (key === undefined) {
+            key = "o" + model;
+            this.objPageKeys.set(model, key);
+        }
+        this.objDraws.push({ key, model, id, level, x, y, z, plane });
     }
 
     // Page keys are built only when the page isn't cached yet, to keep the per-frame path lean.

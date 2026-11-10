@@ -6,6 +6,7 @@ import { LocModelLoader } from "../rs/config/loctype/LocModelLoader";
 import { LocModelType } from "../rs/config/loctype/LocModelType";
 import { NpcModelLoader } from "../rs/config/npctype/NpcModelLoader";
 import { NpcTypeLoader } from "../rs/config/npctype/NpcTypeLoader";
+import { ObjModelLoader } from "../rs/config/objtype/ObjModelLoader";
 import { ObjType } from "../rs/config/objtype/ObjType";
 import { ObjTypeLoader } from "../rs/config/objtype/ObjTypeLoader";
 import { SeqTypeLoader } from "../rs/config/seqtype/SeqTypeLoader";
@@ -23,7 +24,9 @@ export type EntityModelSpec =
     | { kind: "player"; appearance: PlayerAppearance; leftHand: number; rightHand: number }
     | { kind: "spot"; spotAnim: number }
     // A loc by shape and angle as the zone protocol sends it, origin at its centre on the ground.
-    | { kind: "loc"; loc: number; shape: number; angle: number };
+    | { kind: "loc"; loc: number; shape: number; angle: number }
+    // A ground obj (the count is already resolved to its count variant).
+    | { kind: "obj"; obj: number };
 
 export type EntityAnimRequest = {
     key: string;
@@ -57,6 +60,7 @@ export class EntityModelLoader {
         readonly textureLoader: TextureLoader,
         readonly npcModelLoader: NpcModelLoader,
         readonly locModelLoader?: LocModelLoader,
+        readonly objModelLoader?: ObjModelLoader,
     ) {}
 
     bake(request: EntityAnimRequest, textureIdIndexMap: Map<number, number>): EntityAnimData {
@@ -124,6 +128,8 @@ export class EntityModelLoader {
                 return this.getSpotAnimModel(spec.spotAnim, seqId, frame);
             case "loc":
                 return this.getLocModel(spec.loc, spec.shape, spec.angle, seqId, frame);
+            case "obj":
+                return this.objModelLoader?.getModel(spec.obj, 1);
         }
     }
 
