@@ -22,6 +22,7 @@ import { LiveEntity } from "../../live/LiveEntity";
 import { LiveEntityRenderer } from "../../live/LiveEntityRenderer";
 import { LiveOverlay } from "../../live/LiveOverlay";
 import { WorldStateMaps } from "../../live/WorldStateMaps";
+import { SQUARE_CACHE } from "../../live/embed";
 import { createTextureArray } from "../../picogl/PicoTexture";
 import { MenuTargetType } from "../../rs/MenuEntry";
 import { Scene } from "../../rs/scene/Scene";
@@ -1106,6 +1107,9 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                 live.world,
             );
         }
+        this.mapManager.cacheBudget = SQUARE_CACHE;
+        live.maps = this.mapManager;
+        live.canvas = this.canvas;
         live.update(
             clientTicksElapsed,
             this.mapViewer.camera,
