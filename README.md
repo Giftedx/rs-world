@@ -68,6 +68,7 @@ That only works if that server runs with `WORLD_FEED=true`.
 | `follow=<name>`        | Fly to a player and keep following them.                                    |
 | `multi=<a,b,...>`      | Open multi-view with up to 16 players, one view each.                       |
 | `md=<tiles>`           | Multi-view distance per view, 16-128 (default 48).                          |
+| `tile=<mode>`          | Multi-view layout: `grid` (default), `main`, `focus` or `columns`.          |
 | `cx cy cz p y v=1`     | Camera position, pitch and yaw, same as osrs.world.                         |
 
 The Live panel (bottom right) shows connection state, the online count and every player (scroll for more). Info, under
@@ -93,12 +94,35 @@ the viewer answers with messages to `window.parent`:
 | `{multiDistance: 48}`                                | to viewer | View distance per view in tiles, 16-128.                                |
 | `{viewerMulti: {names, shown, offline}}`             | to page   | `names` in the asked order; `shown` have their player on screen; `offline` are not online. A name in neither list is still being found. Sent when it changes; all three are empty after `{multi: []}`. |
 | `{viewerMultiPick: "<name>", index: <view number>}`  | to page   | A click or tap on a view. The viewer does nothing else with it.         |
+| `{multiLayout: {mode, main, gap, ratio, animate, color}}` | to viewer | The tiling. Every part is optional and keeps its value when absent or out of range. `mode`: `"grid"`, `"main"`, `"focus"` or `"columns"`. `main`: the main view, by name or by its number in the asked order. `gap`: 0-24 px between views (default 4). `ratio`: 0.5-0.8, the share of the main view in `"main"` (default 0.62). `animate: false`: changes are drawn at once. `color`: `#rrggbb` of the gaps. |
+| `{multiOrder: ["b", "a", ...]}`                      | to viewer | The same views in a new order. No view follows another player. A name with no view is skipped; a view that is not named stays after the named ones. |
+| `{multiFocus: "<name>"}` or `{multiFocus: <number>}` | to viewer | Selects a view. It is the view that stays when the viewer returns to the single view. |
+| `{multiChrome: false}`                               | to viewer | The page draws the names and frames: the viewer draws no label and no selection frame on a view. |
+| `{viewerMultiLayout: {mode, main, focus, rects, animating, ms, at}}` | to page | Where the views go. `rects` is `[{name, x, y, w, h}]` in the asked order: the target rectangles in CSS pixels of the viewer frame. `main` and `focus` are names or `null`. With `animating: true` the views move there over `ms` milliseconds from the time `at` (milliseconds since the Unix epoch) with an ease-out cubic curve, `cubic-bezier(1/3, 1, 2/3, 1)` in CSS. Sent when the targets change, when a move ends (`animating: false`, `ms: 0`) and after `multiFocus`. |
 
 Each view hides the floors above its own player. A view prints its player's name in its bottom-left
 corner, except for a hidden name (`hideNames`, `hideNamesFrom`): that view has no label, the name is
 not drawn over the player, and messages carry the marker `⟦MAIN⟧` in its place. The marker can also
-be asked for in `multi`, as in `follow`. A view of a player who is not online starts to follow them
-when they log in. Camera input is off in the views of an embedding page.
+be asked for in `multi`, `multiOrder`, `multiFocus` and `multiLayout.main`, as in `follow`. A view of
+a player who is not online starts to follow them when they log in. Camera input is off in the views
+of an embedding page.
+
+The views are tiled, and the main view is the first tile of every layout:
+
+| Layout    | Tiles                                                                                         |
+| --------- | --------------------------------------------------------------------------------------------- |
+| `grid`    | The column count that gives the largest 4:3 views for the window. The last row is stretched over the full width, so no part of the window is empty. |
+| `main`    | The main view takes `ratio` of the window. The others are a grid beside it in a wide window and under it in a tall one. |
+| `focus`   | The main view at the full width, over a strip of thumbnails. A narrow window wraps the strip into at most 3 rows. |
+| `columns` | Views side by side at full height. Columns narrower than 160 px wrap into rows.              |
+
+A change of the views, their order, the layout or the main view moves each view from where it is to
+its new rectangle in 240 ms. A view is the same view while its player is asked for. A new view grows
+and fades in at its place; a closed view shrinks and fades out. While views move, the viewer draws
+every display frame, whatever the `fps` limit; at rest a frame costs what it cost before. There is
+no move when the system asks for reduced motion (`prefers-reduced-motion`) or after
+`{multiLayout: {animate: false}}`, and a new window size is followed at once. `?tile=<mode>` sets
+the layout from the URL.
 
 ## Deploying
 
