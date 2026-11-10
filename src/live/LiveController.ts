@@ -194,7 +194,7 @@ export class LiveController {
         }
 
         if (this.flight) {
-            if (this.flight.step(camera, this.maps, renderDistance)) {
+            if (this.flight.step(camera, this.maps)) {
                 this.flight = undefined;
                 this.orbitDistance = EMBED ? EMBED_FOLLOW_DISTANCE : FOLLOW_DISTANCE;
             }
@@ -261,13 +261,13 @@ export class LiveController {
             : entry
             ? { x: entry[2] + 0.5, z: entry[3] + 0.5 }
             : undefined;
-        // Already following someone: fly there. The first follow (page load) still jumps straight in.
-        if (
-            target &&
-            FLIGHT &&
-            this.followName !== undefined &&
-            this.followName.toLowerCase() !== name.toLowerCase()
-        ) {
+        // Already following someone else: fly there. From free camera fly too, once the scene has squares to
+        // hold on screen; the first follow of an empty scene (page load) jumps straight in.
+        const fly =
+            this.followName === undefined
+                ? (this.maps?.visibleMapCount ?? 0) > 0
+                : this.followName.toLowerCase() !== name.toLowerCase();
+        if (target && FLIGHT && fly) {
             this.flight?.cancel();
             this.flight = new CameraFlight(
                 camera,
