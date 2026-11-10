@@ -87,3 +87,61 @@ test("the multi-view status is posted to the parent once per change", () => {
         }
     }
 });
+
+test("the layout message carries the marker for a hidden name, as a pane, as main and as focus", () => {
+    const embed = loadEmbed("?embed=1&hideNames=Secret");
+    const rect = { x: 10, y: 20, w: 300, h: 200 };
+    const info = embed.multiLayoutInfo(
+        "main",
+        "SECRET",
+        "secret",
+        [
+            { asked: "Bob", rect },
+            { asked: "Secret", rect: { x: 314, y: 20, w: 100, h: 200 } },
+            { asked: embed.MAIN_MARK, rect },
+            { asked: undefined, rect },
+        ],
+        5,
+        7,
+        true,
+        240,
+        1234.5,
+    );
+    expect(info).toEqual({
+        mode: "main",
+        main: embed.MAIN_MARK,
+        focus: embed.MAIN_MARK,
+        rects: [
+            { name: "Bob", x: 15, y: 27, w: 300, h: 200 },
+            { name: embed.MAIN_MARK, x: 319, y: 27, w: 100, h: 200 },
+            { name: embed.MAIN_MARK, x: 15, y: 27, w: 300, h: 200 },
+        ],
+        animating: true,
+        ms: 240,
+        at: 1234.5,
+    });
+    expect(JSON.stringify(info).toLowerCase()).not.toContain("secret");
+    expect(
+        embed.multiLayoutInfo("grid", undefined, undefined, [], 0, 0, false, 0, 0),
+    ).toMatchObject({
+        main: null,
+        focus: null,
+        rects: [],
+    });
+});
+
+test("the layout message is posted to the parent", () => {
+    const embed = loadEmbed("?embed=0");
+    const post = jest.fn();
+    const parent = Object.getOwnPropertyDescriptor(window, "parent");
+    Object.defineProperty(window, "parent", { configurable: true, value: { postMessage: post } });
+    try {
+        const info = embed.multiLayoutInfo("grid", "a", "a", [], 0, 0, false, 0, 1);
+        embed.postMultiLayout(info);
+        expect(post.mock.calls).toEqual([[{ viewerMultiLayout: info }, "*"]]);
+    } finally {
+        if (parent) {
+            Object.defineProperty(window, "parent", parent);
+        }
+    }
+});

@@ -30,6 +30,7 @@ import { createTextureArray } from "../../picogl/PicoTexture";
 import { MenuTargetType } from "../../rs/MenuEntry";
 import { Scene } from "../../rs/scene/Scene";
 import { isTouchDevice, isWebGL2Supported, pixelRatio } from "../../util/DeviceUtil";
+import { Camera } from "../Camera";
 import { MapManager } from "../MapManager";
 import { MapViewer } from "../MapViewer";
 import { MapViewerRenderer } from "../MapViewerRenderer";
@@ -63,8 +64,8 @@ const TEXTURE_SIZE = 128;
 // 20 squares a second at 20 frames a second.
 const SQUARE_UPLOAD_BUDGET_MS = 6;
 
-// Multi-view: the colour between panes.
-const PANE_GUTTER_COLOR = [0.07, 0.07, 0.07, 1];
+// Multi-view: the depth a pane's part of the framebuffer is cleared to.
+const FAR_DEPTH = new Float32Array([1]);
 
 const INTERACT_BUFFER_COUNT = 2;
 const INTERACTION_RADIUS = 5;
@@ -208,6 +209,8 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     liveRendererController?: LiveController;
     // Set while the entity renderer draws multi-view panes.
     private liveRendererMulti?: MultiView;
+    // The cameras of the panes drawn this frame (kept between frames).
+    private readonly multiCameras: Camera[] = [];
     // Applies the zone state (locs, projectiles, map anims) to the map squares.
     worldStateMaps?: WorldStateMaps;
     private worldStateManagers: MapManager<WebGLMapSquare>[] = [];
@@ -1161,6 +1164,11 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     // Multi-view: every pane is drawn into its own viewport of the one framebuffer, with its own
     // camera, floor limit and live world, sharing the loaded map squares, the zone state, the
     // textures and the baked entity models.
+    // A layout change of the panes is drawn at the display's rate, whatever the frame limit.
+    override needsEveryFrame(): boolean {
+        return !!this.mapViewer.multi?.wantsFrames();
+    }
+
     renderMulti(time: number, deltaTime: number, resized: boolean): void {
         const multi = this.mapViewer.multi!;
         const frameCount = this.stats.frameCount;
@@ -1212,7 +1220,10 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         }
         const cssWidth = this.canvas.clientWidth;
         const cssHeight = this.canvas.clientHeight;
-        multi.layout(cssWidth, cssHeight);
+        multi.layout(cssWidth, cssHeight, time);
+        // Closed panes are drawn until they have faded out.
+        const panes = multi.drawList;
+        const paneCount = panes.length;
         const scaleX = this.app.width / Math.max(cssWidth, 1);
         const scaleY = this.app.height / Math.max(cssHeight, 1);
 
@@ -1279,11 +1290,13 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         this.mapManager.cacheBudget = SQUARE_CACHE;
         const renderDistance = this.mapViewer.multiRenderDistance;
         const fogDepth = Math.max(this.fogDepth, renderDistance / 8);
-        const viewports = multi.panes.map((p) => viewportRect(p.rect, cssHeight, scaleX, scaleY));
-        const cameras = multi.panes.map((p) => p.camera);
-        for (let i = 0; i < multi.panes.length; i++) {
-            const pane = multi.panes[i];
+        const cameras = this.multiCameras;
+        cameras.length = paneCount;
+        for (let i = 0; i < paneCount; i++) {
+            const pane = panes[i];
             const live = pane.live;
+            const viewport = viewportRect(pane.rect, cssHeight, scaleX, scaleY, pane.viewport);
+            cameras[i] = pane.camera;
             live.maps = this.mapManager;
             live.canvas = undefined;
             live.update(clientTicksElapsed, pane.camera, renderDistance, this.getLiveGroundY);
@@ -1294,7 +1307,8 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                 level = live.getFollowedLevel() ?? pane.level ?? this.manualMaxLevel;
             }
             pane.level = level;
-            pane.camera.update(viewports[i].w, viewports[i].h);
+            // The projection follows the pane's rectangle while it moves.
+            pane.camera.update(viewport.w, viewport.h);
         }
         this.updateWorldState();
         const status = multi.updateStatus(this.getLiveGroundY);
@@ -1330,8 +1344,8 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         this.app.viewport(0, 0, this.app.width, this.app.height);
         this.app.clearColor(0.0, 0.0, 0.0, 1.0);
         this.app.clear();
-        // The gutters between panes.
-        this.gl.clearBufferfv(PicoGL.COLOR, 0, PANE_GUTTER_COLOR);
+        // The gaps between panes.
+        this.gl.clearBufferfv(PicoGL.COLOR, 0, this.mapViewer.multiGapColor);
 
         // With a feed the squares carry no cache npcs, so this texture stays empty.
         this.npcRenderCount = 0;
@@ -1339,12 +1353,17 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         const npcDataTexture = this.npcDataTextureBuffer[npcDataTextureIndex];
 
         this.app.enable(PicoGL.SCISSOR_TEST);
-        for (let i = 0; i < multi.panes.length; i++) {
-            const pane = multi.panes[i];
-            const viewport = viewports[i];
+        // Panes that move can cross: each is drawn over the ones before it.
+        const crossing = multi.animating;
+        for (let i = 0; i < paneCount; i++) {
+            const pane = panes[i];
+            const viewport = pane.viewport;
             this.app.viewport(viewport.x, viewport.y, viewport.w, viewport.h);
             this.app.scissor(viewport.x, viewport.y, viewport.w, viewport.h);
             this.gl.clearBufferfv(PicoGL.COLOR, 0, this.skyColor);
+            if (crossing) {
+                this.gl.clearBufferfv(PicoGL.DEPTH, 0, FAR_DEPTH);
+            }
 
             const paneCamera = pane.camera;
             const paneLevel = pane.level ?? this.manualMaxLevel;
@@ -1432,7 +1451,8 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             this.frameDrawCall.draw();
         }
 
-        for (const pane of multi.panes) {
+        for (let i = 0; i < paneCount; i++) {
+            const pane = panes[i];
             pane.overlay.draw(
                 pane.live,
                 pane.camera,

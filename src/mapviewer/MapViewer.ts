@@ -4,13 +4,26 @@ import { URLSearchParamsInit } from "react-router-dom";
 import { OsrsMenuEntry } from "../components/rs/menu/OsrsMenu";
 import { LiveController, MAX_AREA_RADIUS, getDefaultFeedUrl } from "../live/LiveController";
 import {
+    DEFAULT_GAP,
     DEFAULT_MULTI_DISTANCE,
+    DEFAULT_RATIO,
+    LayoutOptions,
     MAX_PANES,
+    parseGap,
+    parseLayoutMode,
     parseMultiDistance,
     parseMultiNames,
+    parseRatio,
+    reorderBy,
 } from "../live/MultiLayout";
 import { MultiPane, MultiView } from "../live/MultiView";
-import { EMBED, paneMessageName, postMultiPick, postMultiStatus } from "../live/embed";
+import {
+    EMBED,
+    paneMessageName,
+    postMultiLayout,
+    postMultiPick,
+    postMultiStatus,
+} from "../live/embed";
 import { WorldState } from "../live/WorldState";
 import { MenuTargetType } from "../rs/MenuEntry";
 import { CacheSystem } from "../rs/cache/CacheSystem";
@@ -111,6 +124,17 @@ export class MapViewer {
     multiNames?: string[];
     // Pane view distance in tiles (?md=).
     multiRenderDistance: number = DEFAULT_MULTI_DISTANCE;
+    // The tiling of the panes (?tile=<mode> or a {multiLayout} message), kept for a multi-view
+    // that starts later.
+    multiLayout: LayoutOptions = { mode: "grid", gap: DEFAULT_GAP, ratio: DEFAULT_RATIO };
+    // The asked name of the main pane.
+    multiMain?: string;
+    multiAnimate: boolean = true;
+    // False: the embedding page draws the pane names and frames ({multiChrome: false}).
+    multiChrome: boolean = true;
+    // The colour between panes: for the GL clear and as CSS.
+    multiGapColor: Float32Array = new Float32Array([0.07, 0.07, 0.07, 1]);
+    multiGapCss: string = "#121212";
 
     constructor(
         readonly workerPool: RenderDataWorkerPool,
@@ -158,6 +182,9 @@ export class MapViewer {
             if (this.multiRenderDistance !== DEFAULT_MULTI_DISTANCE) {
                 multiParams["md"] = this.multiRenderDistance.toString();
             }
+            if (this.multiLayout.mode !== "grid") {
+                multiParams["tile"] = this.multiLayout.mode;
+            }
             return multiParams;
         }
         const followName = this.live?.followName ?? this.live?.pendingFollow;
@@ -198,6 +225,7 @@ export class MapViewer {
         if (multi !== null) {
             this.multiRenderDistance =
                 parseMultiDistance(searchParams.get("md")) ?? this.multiRenderDistance;
+            this.multiLayout.mode = parseLayoutMode(searchParams.get("tile")) ?? this.multiLayout.mode;
             this.setMulti(parseMultiNames(multi));
         }
 
@@ -348,23 +376,116 @@ export class MapViewer {
             if (kept) {
                 return kept;
             }
-            const pane = spare.shift() ?? this.makePane(from);
+            // The single view that just became a pane takes a new name. Any other pane keeps its
+            // player until it closes, so a pane that moves is always the same player.
+            const fresh = spare.findIndex((p) => p.enter !== "");
+            const pane = fresh === -1 ? this.makePane(from) : spare.splice(fresh, 1)[0];
             pane.asked = names[i];
             pane.live.unfollow();
             pane.live.pendingFollow = names[i];
             return pane;
         });
-        for (const pane of spare) {
-            pane.frame.remove();
-            pane.live.stop();
-        }
+        // The panes left in spare close: reorder() fades them out and onRetired stops their feeds.
         multi.reorder(next);
         if (multi.embedded) {
             multi.setActive(0);
         }
+        this.applyMultiLayout();
         this.wireRoster();
         this.syncActivePane();
         this.updateSearchParams();
+    }
+
+    // {multiLayout: {mode, main, gap, ratio, animate, color}}: the tiling of the panes. A part that
+    // is absent or out of range keeps its value. main is a pane's name or its number in the asked
+    // order; color (#rrggbb) is the colour of the gaps.
+    setMultiLayout(spec: unknown): void {
+        if (!spec || typeof spec !== "object") {
+            return;
+        }
+        const d = spec as Record<string, unknown>;
+        const layout = this.multiLayout;
+        layout.mode = parseLayoutMode(d.mode) ?? layout.mode;
+        layout.gap = parseGap(d.gap) ?? layout.gap;
+        layout.ratio = parseRatio(d.ratio) ?? layout.ratio;
+        if (typeof d.animate === "boolean") {
+            this.multiAnimate = d.animate;
+        }
+        if (typeof d.color === "string" && /^#[0-9a-f]{6}$/i.test(d.color)) {
+            const rgb = parseInt(d.color.slice(1), 16);
+            this.multiGapColor[0] = (rgb >> 16) / 255;
+            this.multiGapColor[1] = ((rgb >> 8) & 255) / 255;
+            this.multiGapColor[2] = (rgb & 255) / 255;
+            this.multiGapCss = d.color;
+        }
+        if (typeof d.main === "string") {
+            this.multiMain = d.main;
+        } else if (typeof d.main === "number") {
+            this.multiMain = this.multi?.findPane(d.main)?.getAsked() ?? this.multiMain;
+        }
+        this.applyMultiLayout();
+        this.updateSearchParams();
+    }
+
+    // Hands the layout settings to the panes. The panes move only when a setting changed.
+    private applyMultiLayout(): void {
+        const multi = this.multi;
+        if (!multi) {
+            return;
+        }
+        const { mode, gap, ratio } = this.multiLayout;
+        const options = multi.options;
+        if (options.mode !== mode || options.gap !== gap || options.ratio !== ratio) {
+            options.mode = mode;
+            options.gap = gap;
+            options.ratio = ratio;
+            multi.relayout();
+        }
+        multi.animate = this.multiAnimate;
+        multi.setChrome(this.multiChrome);
+        multi.setGapColor(this.multiGapCss);
+        if (this.multiMain !== undefined) {
+            multi.setMain(multi.findPane(this.multiMain) ?? multi.main);
+        }
+    }
+
+    // {multiOrder: [names]}: the same panes in a new order. No pane follows another player, so no
+    // feed changes. A name that has no pane is skipped; a pane that is not named keeps its place
+    // after the named ones.
+    setMultiOrder(names: string[]): void {
+        const multi = this.multi;
+        if (!multi) {
+            return;
+        }
+        const keys = names.map((name) => name.toLowerCase());
+        const next = reorderBy(multi.panes, keys, (pane) => pane.getAsked()?.toLowerCase() ?? "");
+        if (next.every((pane, i) => pane === multi.panes[i])) {
+            return;
+        }
+        multi.reorder(next);
+        this.multiNames = next.map((p) => p.getAsked()).filter((n): n is string => !!n);
+        this.wireRoster();
+        this.syncActivePane();
+        this.updateSearchParams();
+    }
+
+    // {multiFocus: name | number}: selects a pane. Camera input acts on it, and it is the pane
+    // that stays when the viewer returns to the single view.
+    setMultiFocus(ref: unknown): void {
+        const multi = this.multi;
+        const pane = multi?.findPane(ref);
+        if (!multi || !pane) {
+            return;
+        }
+        multi.setActive(multi.panes.indexOf(pane));
+        this.syncActivePane();
+        multi.onLayout?.(multi.layoutInfo(performance.now()));
+    }
+
+    // {multiChrome: false}: the page draws the pane names and frames; the viewer draws none.
+    setMultiChrome(on: boolean): void {
+        this.multiChrome = on;
+        this.multi?.setChrome(on);
     }
 
     // View distance of every pane, in tiles.
@@ -404,8 +525,8 @@ export class MapViewer {
         if (!multi || multi.panes.length <= 1) {
             return;
         }
+        // The pane fades out; onRetired stops its feed.
         multi.removePane(pane);
-        pane.live.stop();
         if (multi.panes.length === 1) {
             this.leaveMulti();
             return;
@@ -438,11 +559,20 @@ export class MapViewer {
                 postMultiPick(paneMessageName(asked), index);
             }
         });
+        multi.onLayout = postMultiLayout;
+        multi.onRetired = (pane) => {
+            pane.live.rosterListeners.length = 0;
+            pane.live.stop();
+        };
         live.maxAreaRadius = this.multiRenderDistance;
         live.flights = false;
-        multi.addPane(new MultiPane(this.camera, live, undefined, this.paneHandlers()));
+        const first = new MultiPane(this.camera, live, undefined, this.paneHandlers());
+        // The single view shrinks from the full window to its place.
+        first.enter = "full";
+        multi.addPane(first);
         multi.setActive(0);
         this.multi = multi;
+        this.applyMultiLayout();
         return multi;
     }
 

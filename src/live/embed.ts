@@ -118,3 +118,39 @@ export function postMultiStatus(status: MultiStatus): void {
 export function postMultiPick(name: string, index: number): void {
     if (window.parent !== window) window.parent.postMessage({ viewerMultiPick: name, index }, "*");
 }
+
+// Where the panes of the layout are going, for a page that draws its own frames over them. Rects are
+// the target rectangles in CSS pixels of the viewer frame, in the asked order. A hidden name is the marker.
+// animating: the panes move there over ms milliseconds from the time at (ms since the Unix epoch).
+export type MultiLayoutInfo = {
+    mode: string;
+    main: string | null;
+    focus: string | null;
+    rects: { name: string; x: number; y: number; w: number; h: number }[];
+    animating: boolean;
+    ms: number;
+    at: number;
+};
+
+export function multiLayoutInfo(
+    mode: string,
+    main: string | undefined,
+    focus: string | undefined,
+    panes: { asked: string | undefined; rect: { x: number; y: number; w: number; h: number } }[],
+    left: number,
+    top: number,
+    animating: boolean,
+    ms: number,
+    at: number,
+): MultiLayoutInfo {
+    const rects: MultiLayoutInfo["rects"] = [];
+    for (const { asked, rect } of panes) {
+        if (asked) rects.push({ name: paneMessageName(asked), x: rect.x + left, y: rect.y + top, w: rect.w, h: rect.h });
+    }
+    return { mode, main: main ? paneMessageName(main) : null, focus: focus ? paneMessageName(focus) : null, rects, animating, ms, at };
+}
+
+// Sent when the target rectangles change and when a move ends.
+export function postMultiLayout(info: MultiLayoutInfo): void {
+    if (window.parent !== window) window.parent.postMessage({ viewerMultiLayout: info }, "*");
+}

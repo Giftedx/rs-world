@@ -56,6 +56,11 @@ export abstract class Renderer {
 
     onResize(width: number, height: number) {}
 
+    // True while something moves that must not wait for the frame limit.
+    needsEveryFrame(): boolean {
+        return false;
+    }
+
     frameCallback = (time: DOMHighResTimeStamp) => {
         try {
             const resized = resizeCanvas(this.canvas, this.resolutionScale);
@@ -65,7 +70,7 @@ export abstract class Renderer {
 
             const deltaTime = this.stats.getDeltaTime(time);
 
-            if (this.fpsLimit && deltaTime > 0) {
+            if (this.fpsLimit && deltaTime > 0 && !this.needsEveryFrame()) {
                 const tolerance = 1;
                 if (deltaTime < 1000 / this.fpsLimit - tolerance) {
                     return;

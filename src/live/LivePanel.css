@@ -205,6 +205,25 @@
     z-index: 1;
 }
 
+/* A pane that fades in or out is covered with the colour of the gaps. */
+.multi-pane-veil {
+    position: absolute;
+    inset: 0;
+    background: var(--multi-gap, #121212);
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* {multiChrome: false}: the embedding page draws the names and frames. */
+.multi-view.no-chrome .multi-pane,
+.multi-view.no-chrome .multi-pane.active {
+    outline: none;
+}
+
+.multi-view.no-chrome .multi-pane-label {
+    display: none;
+}
+
 /* An embedding page has no selected pane. */
 .multi-view.embedded .multi-pane.active {
     outline: 1px solid rgba(0, 0, 0, 0.9);

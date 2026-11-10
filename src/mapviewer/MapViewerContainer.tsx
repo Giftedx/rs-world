@@ -85,6 +85,12 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
             const md = parseMultiDistance(d.multiDistance);
             if (md !== undefined) renderer.mapViewer.setMultiDistance(md);
             if (Array.isArray(d.multi)) renderer.mapViewer.setMulti(parseMultiNames(d.multi));
+            // {multiChrome: false}: the page draws the pane names and frames. {multiLayout: {...}} sets the tiling,
+            // {multiOrder: [names]} reorders the panes and {multiFocus: name | number} selects one.
+            if (typeof d.multiChrome === "boolean") renderer.mapViewer.setMultiChrome(d.multiChrome);
+            if (d.multiLayout) renderer.mapViewer.setMultiLayout(d.multiLayout);
+            if (Array.isArray(d.multiOrder)) renderer.mapViewer.setMultiOrder(parseMultiNames(d.multiOrder));
+            if (typeof d.multiFocus === "string" || Number.isInteger(d.multiFocus)) renderer.mapViewer.setMultiFocus(d.multiFocus);
             const live = renderer.mapViewer.live;
             if (typeof d.follow === "string" && live) {
                 if (live.followName?.toLowerCase() !== d.follow.toLowerCase()) live.pendingFollow = d.follow;

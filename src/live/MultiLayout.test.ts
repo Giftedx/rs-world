@@ -1,13 +1,27 @@
 import {
+    DEFAULT_GAP,
+    DEFAULT_RATIO,
+    LAYOUT_MODES,
+    LayoutMode,
+    LayoutOptions,
     MAX_PANES,
     PaneRect,
-    gridSize,
-    layoutRects,
+    TRANSITION_MS,
+    easeOutCubic,
+    gridColumns,
+    mainFirst,
+    mixRect,
     paneAt,
+    parseGap,
+    parseLayoutMode,
     parseMultiDistance,
     parseMultiNames,
+    parseRatio,
+    reorderBy,
+    shrunkRect,
     squareBounds,
     squaresNeeded,
+    tileRects,
     viewportRect,
 } from "./MultiLayout";
 
@@ -46,98 +60,215 @@ test("parseMultiDistance accepts 16 to 128 tiles only", () => {
     expect(parseMultiDistance("x")).toBeUndefined();
 });
 
-describe("gridSize", () => {
-    test("wide windows, 1 to 16 panes", () => {
-        const grids = Array.from({ length: 16 }, (_, i) => {
-            const { cols, rows } = gridSize(i + 1, 1600, 900);
-            return `${cols}x${rows}`;
-        });
-        expect(grids).toEqual([
-            "1x1",
-            "2x1",
-            "2x2",
-            "2x2",
-            "3x2",
-            "3x2",
-            "3x3",
-            "3x3",
-            "3x3",
-            "4x3",
-            "4x3",
-            "4x3",
-            "4x4",
-            "4x4",
-            "4x4",
-            "4x4",
-        ]);
+const layout = (mode: LayoutMode, gap = DEFAULT_GAP, ratio = DEFAULT_RATIO): LayoutOptions => ({
+    mode,
+    gap,
+    ratio,
+});
+const overlaps = (a: PaneRect, b: PaneRect) =>
+    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+const WINDOWS = [
+    [1280, 720],
+    [1048, 757],
+    [375, 812],
+    [390, 700],
+    [1001, 333],
+];
+
+test("layout options accept the listed modes, a gap of 0 to 24 px and a ratio of 0.5 to 0.8", () => {
+    expect(LAYOUT_MODES.map(parseLayoutMode)).toEqual(["grid", "main", "focus", "columns"]);
+    expect(parseLayoutMode("spiral")).toBeUndefined();
+    expect(parseLayoutMode(1)).toBeUndefined();
+    expect([0, 4, 24].map(parseGap)).toEqual([0, 4, 24]);
+    expect([-1, 25, 2.5, "4", NaN].map(parseGap)).toEqual([
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+    ]);
+    expect([0.5, 0.62, 0.8].map(parseRatio)).toEqual([0.5, 0.62, 0.8]);
+    expect([0.49, 0.81, "0.6", NaN].map(parseRatio)).toEqual([
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+    ]);
+});
+
+describe("gridColumns", () => {
+    test("a wide window gets the column count with the largest 4:3 panes", () => {
+        const cols = Array.from({ length: 16 }, (_, i) => gridColumns(i + 1, 1280, 720, 4));
+        expect(cols).toEqual([1, 2, 2, 2, 3, 3, 4, 4, 3, 4, 4, 4, 5, 5, 5, 4]);
     });
 
-    test("tall windows put the extra panes in rows", () => {
-        expect(gridSize(2, 400, 900)).toEqual({ cols: 1, rows: 2 });
-        expect(gridSize(5, 400, 900)).toEqual({ cols: 2, rows: 3 });
-        expect(gridSize(10, 400, 900)).toEqual({ cols: 3, rows: 4 });
-        expect(gridSize(16, 400, 900)).toEqual({ cols: 4, rows: 4 });
+    test("a tall window puts the extra panes in rows", () => {
+        expect(gridColumns(2, 390, 700, 4)).toBe(1);
+        expect(gridColumns(4, 390, 700, 4)).toBe(1);
+        expect(gridColumns(9, 390, 700, 4)).toBe(2);
+        expect(gridColumns(16, 390, 700, 4)).toBe(3);
     });
 
-    test("always has room for every pane", () => {
-        for (let n = 1; n <= 16; n++) {
-            for (const [w, h] of [
-                [1600, 900],
-                [400, 900],
-                [500, 500],
-            ]) {
-                const { cols, rows } = gridSize(n, w, h);
-                expect(cols * rows).toBeGreaterThanOrEqual(n);
-                expect(cols * (rows - 1)).toBeLessThan(n);
-            }
-        }
+    test("of two grids with equal panes, the one with fewer empty cells wins", () => {
+        // 2 x 2 and 3 x 2 cells hold the same 4:3 box in this window; 3 x 2 has no empty cell.
+        expect(gridColumns(6, 1200, 600, 0)).toBe(3);
     });
 });
 
-describe("layoutRects", () => {
-    const overlaps = (a: PaneRect, b: PaneRect) =>
-        a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
-
-    test("one pane fills the window", () => {
-        expect(layoutRects(1, 1280, 720)).toEqual([{ x: 0, y: 0, w: 1280, h: 720 }]);
+describe("tileRects", () => {
+    test("one pane fills the window in every layout", () => {
+        for (const mode of LAYOUT_MODES) {
+            expect(tileRects(1, 1280, 720, layout(mode))).toEqual([
+                { x: 0, y: 0, w: 1280, h: 720 },
+            ]);
+        }
+        expect(tileRects(0, 1280, 720, layout("grid"))).toEqual([]);
     });
 
-    test("four panes are a 2 x 2 grid with a 2 px gutter", () => {
-        expect(layoutRects(4, 1280, 720)).toEqual([
-            { x: 0, y: 0, w: 639, h: 359 },
-            { x: 641, y: 0, w: 639, h: 359 },
-            { x: 0, y: 361, w: 639, h: 359 },
-            { x: 641, y: 361, w: 639, h: 359 },
+    test("four panes are a 2 x 2 grid with the gap between them", () => {
+        expect(tileRects(4, 1280, 720, layout("grid"))).toEqual([
+            { x: 0, y: 0, w: 638, h: 358 },
+            { x: 642, y: 0, w: 638, h: 358 },
+            { x: 0, y: 362, w: 638, h: 358 },
+            { x: 642, y: 362, w: 638, h: 358 },
+        ]);
+        expect(tileRects(4, 1280, 720, layout("grid", 0))).toEqual([
+            { x: 0, y: 0, w: 640, h: 360 },
+            { x: 640, y: 0, w: 640, h: 360 },
+            { x: 0, y: 360, w: 640, h: 360 },
+            { x: 640, y: 360, w: 640, h: 360 },
         ]);
     });
 
-    test("1 to 16 panes stay inside the window and never overlap", () => {
-        for (let n = 1; n <= 16; n++) {
-            for (const [w, h] of [
-                [1280, 720],
-                [375, 812],
-                [1001, 333],
-            ]) {
-                const rects = layoutRects(n, w, h);
-                expect(rects).toHaveLength(n);
-                for (let i = 0; i < n; i++) {
-                    const r = rects[i];
-                    expect(r.w).toBeGreaterThan(0);
-                    expect(r.h).toBeGreaterThan(0);
-                    expect(r.x).toBeGreaterThanOrEqual(0);
-                    expect(r.y).toBeGreaterThanOrEqual(0);
-                    expect(r.x + r.w).toBeLessThanOrEqual(w);
-                    expect(r.y + r.h).toBeLessThanOrEqual(h);
-                    for (let j = i + 1; j < n; j++) {
-                        expect(overlaps(r, rects[j])).toBe(false);
+    test("the last row of a grid is stretched over the full width", () => {
+        const rects = tileRects(5, 1280, 720, layout("grid"));
+        expect(rects.slice(3)).toEqual([
+            { x: 0, y: 362, w: 638, h: 358 },
+            { x: 642, y: 362, w: 638, h: 358 },
+        ]);
+    });
+
+    test("main: the main pane takes the ratio and the stack is on the long side", () => {
+        const wide = tileRects(4, 1280, 720, layout("main"));
+        expect(wide[0]).toEqual({ x: 0, y: 0, w: 791, h: 720 });
+        expect(wide.slice(1).every((r) => r.x === 795 && r.w === 485)).toBe(true);
+        expect(wide.slice(1).map((r) => r.y)).toEqual([0, 241, 483]);
+        expect(tileRects(4, 1280, 720, layout("main", 4, 0.8))[0].w).toBe(1021);
+
+        const tall = tileRects(4, 390, 700, layout("main"));
+        expect(tall[0]).toEqual({ x: 0, y: 0, w: 390, h: 432 });
+        expect(tall.slice(1).every((r) => r.y >= 436)).toBe(true);
+    });
+
+    test("main: a large stack is a grid of its own", () => {
+        const rects = tileRects(16, 1280, 720, layout("main"));
+        const columns = new Set(rects.slice(1).map((r) => r.x));
+        expect(columns.size).toBeGreaterThan(1);
+        expect(Math.min(...rects.slice(1).map((r) => r.h))).toBeGreaterThan(80);
+    });
+
+    test("focus: the main pane has the full width over a strip of thumbnails", () => {
+        const rects = tileRects(5, 1280, 720, layout("focus"));
+        expect(rects[0]).toEqual({ x: 0, y: 0, w: 1280, h: 601 });
+        expect(rects.slice(1).map((r) => [r.x, r.y, r.w, r.h])).toEqual([
+            [0, 605, 317, 115],
+            [321, 605, 317, 115],
+            [642, 605, 317, 115],
+            [963, 605, 317, 115],
+        ]);
+        // A narrow window wraps the thumbnails into rows and keeps the main pane the largest.
+        const phone = tileRects(16, 390, 700, layout("focus"));
+        expect(new Set(phone.slice(1).map((r) => r.y)).size).toBe(3);
+        expect(phone[0].h).toBeGreaterThanOrEqual(700 * 0.5);
+        expect(Math.min(...phone.slice(1).map((r) => r.w))).toBeGreaterThanOrEqual(70);
+    });
+
+    test("columns: full height side by side, wrapped when a column would be too narrow", () => {
+        const four = tileRects(4, 1280, 720, layout("columns"));
+        expect(four.every((r) => r.y === 0 && r.h === 720)).toBe(true);
+        expect(four.map((r) => r.x)).toEqual([0, 321, 642, 963]);
+        const many = tileRects(16, 1280, 720, layout("columns"));
+        expect(new Set(many.map((r) => r.y)).size).toBe(3);
+        expect(Math.min(...many.map((r) => r.w))).toBeGreaterThanOrEqual(160);
+    });
+
+    test("1 to 16 panes of every layout stay inside the window and never overlap", () => {
+        for (const mode of LAYOUT_MODES) {
+            for (const gap of [0, 4, 12]) {
+                for (const [w, h] of WINDOWS) {
+                    for (let n = 1; n <= 16; n++) {
+                        const rects = tileRects(n, w, h, layout(mode, gap));
+                        expect(rects).toHaveLength(n);
+                        for (let i = 0; i < n; i++) {
+                            const r = rects[i];
+                            expect([r.x, r.y, r.w, r.h].every(Number.isInteger)).toBe(true);
+                            expect(r.w).toBeGreaterThan(0);
+                            expect(r.h).toBeGreaterThan(0);
+                            expect(r.x).toBeGreaterThanOrEqual(0);
+                            expect(r.y).toBeGreaterThanOrEqual(0);
+                            expect(r.x + r.w).toBeLessThanOrEqual(w);
+                            expect(r.y + r.h).toBeLessThanOrEqual(h);
+                            for (let j = i + 1; j < n; j++) {
+                                expect(overlaps(r, rects[j])).toBe(false);
+                            }
+                        }
                     }
                 }
             }
         }
     });
 
-    test("paneAt finds the pane under a point and nothing in a gutter", () => {
-        const rects = layoutRects(4, 1280, 720);
+    test("the panes and their gaps cover the window: neighbours are one gap apart", () => {
+        for (const mode of LAYOUT_MODES) {
+            for (const gap of [0, 4]) {
+                for (const [w, h] of WINDOWS) {
+                    for (let n = 1; n <= 16; n++) {
+                        const rects = tileRects(n, w, h, layout(mode, gap));
+                        for (const r of rects) {
+                            // The next thing to the right and below is a pane one gap away, or the edge.
+                            const right = r.x + r.w;
+                            const below = r.y + r.h;
+                            if (right < w) {
+                                expect(
+                                    rects.some(
+                                        (o) =>
+                                            o.x === right + gap && o.y < below && r.y < o.y + o.h,
+                                    ),
+                                ).toBe(true);
+                            }
+                            if (below < h) {
+                                expect(
+                                    rects.some(
+                                        (o) =>
+                                            o.y === below + gap && o.x < right && r.x < o.x + o.w,
+                                    ),
+                                ).toBe(true);
+                            }
+                        }
+                        const area = rects.reduce((sum, r) => sum + r.w * r.h, 0);
+                        if (gap === 0) {
+                            expect(area).toBe(w * h);
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    test("the main pane is the largest pane of the main and focus layouts", () => {
+        for (const mode of ["main", "focus"] as const) {
+            for (const [w, h] of WINDOWS) {
+                for (let n = 2; n <= 16; n++) {
+                    const rects = tileRects(n, w, h, layout(mode));
+                    const areas = rects.map((r) => r.w * r.h);
+                    expect(areas[0]).toBe(Math.max(...areas));
+                }
+            }
+        }
+    });
+
+    test("paneAt finds the pane under a point and nothing in a gap", () => {
+        const rects = tileRects(4, 1280, 720, layout("grid"));
         expect(paneAt(rects, 10, 10)).toBe(0);
         expect(paneAt(rects, 1279, 10)).toBe(1);
         expect(paneAt(rects, 10, 719)).toBe(2);
@@ -147,11 +278,115 @@ describe("layoutRects", () => {
     });
 });
 
+describe("pane order", () => {
+    test("mainFirst moves the main pane to the front and keeps the others in order", () => {
+        expect(mainFirst(["a", "b", "c", "d"], "c")).toEqual(["c", "a", "b", "d"]);
+        expect(mainFirst(["a", "b", "c"], "a")).toEqual(["a", "b", "c"]);
+        expect(mainFirst(["a", "b", "c"], undefined)).toEqual(["a", "b", "c"]);
+        expect(mainFirst(["a", "b", "c"], "x")).toEqual(["a", "b", "c"]);
+    });
+
+    test("reorderBy takes the listed panes first and keeps the others", () => {
+        const key = (name: string) => name.toLowerCase();
+        expect(reorderBy(["Ann", "Bob", "Cat"], ["cat", "ann", "bob"], key)).toEqual([
+            "Cat",
+            "Ann",
+            "Bob",
+        ]);
+        expect(reorderBy(["Ann", "Bob", "Cat"], ["bob"], key)).toEqual(["Bob", "Ann", "Cat"]);
+        expect(reorderBy(["Ann", "Bob", "Cat"], ["zed", "cat", "cat"], key)).toEqual([
+            "Cat",
+            "Ann",
+            "Bob",
+        ]);
+    });
+});
+
+describe("pane transition", () => {
+    test("the move takes between 220 and 260 ms", () => {
+        expect(TRANSITION_MS).toBeGreaterThanOrEqual(220);
+        expect(TRANSITION_MS).toBeLessThanOrEqual(260);
+    });
+
+    test("easeOutCubic starts fast, never goes back and ends at rest", () => {
+        expect(easeOutCubic(0)).toBe(0);
+        expect(easeOutCubic(1)).toBe(1);
+        expect(easeOutCubic(-1)).toBe(0);
+        expect(easeOutCubic(2)).toBe(1);
+        expect(easeOutCubic(0.5)).toBeCloseTo(0.875);
+        let last = 0;
+        for (let i = 1; i <= 100; i++) {
+            const e = easeOutCubic(i / 100);
+            expect(e).toBeGreaterThanOrEqual(last);
+            last = e;
+        }
+        expect(easeOutCubic(0.1) - easeOutCubic(0)).toBeGreaterThan(
+            easeOutCubic(1) - easeOutCubic(0.9),
+        );
+    });
+
+    test("mixRect moves every edge one way, in whole pixels, and lands on the target", () => {
+        const from = { x: 0, y: 0, w: 638, h: 358 };
+        const to = { x: 795, y: 483, w: 485, h: 237 };
+        const out = { x: 0, y: 0, w: 0, h: 0 };
+        expect(mixRect(out, from, to, 0)).toEqual(from);
+        expect(mixRect(out, from, to, 1)).toEqual(to);
+        expect(mixRect(out, from, to, 1)).toBe(out);
+        let last = { ...from };
+        for (let i = 1; i <= 60; i++) {
+            const r = mixRect(out, from, to, easeOutCubic(i / 60));
+            expect([r.x, r.y, r.w, r.h].every(Number.isInteger)).toBe(true);
+            expect(r.x).toBeGreaterThanOrEqual(last.x);
+            expect(r.y).toBeGreaterThanOrEqual(last.y);
+            expect(r.x + r.w).toBeGreaterThanOrEqual(last.x + last.w);
+            expect(r.y + r.h).toBeGreaterThanOrEqual(last.y + last.h);
+            last = { ...r };
+        }
+    });
+
+    test("two panes that swap places keep their gap apart sizes at both ends", () => {
+        const [a, b] = tileRects(2, 1280, 720, layout("grid"));
+        const out = { x: 0, y: 0, w: 0, h: 0 };
+        expect(mixRect(out, a, b, 1)).toEqual(b);
+        expect({ ...mixRect(out, b, a, 1) }).toEqual(a);
+    });
+
+    test("shrunkRect keeps the centre", () => {
+        expect(shrunkRect({ x: 100, y: 50, w: 400, h: 200 }, 0.5)).toEqual({
+            x: 200,
+            y: 100,
+            w: 200,
+            h: 100,
+        });
+        expect(shrunkRect({ x: 0, y: 0, w: 101, h: 51 }, 1)).toEqual({ x: 0, y: 0, w: 101, h: 51 });
+    });
+});
+
 describe("viewportRect", () => {
     test("flips to GL's bottom-left origin", () => {
-        const rects = layoutRects(4, 1280, 720);
-        expect(viewportRect(rects[0], 720, 1, 1)).toEqual({ x: 0, y: 361, w: 639, h: 359 });
-        expect(viewportRect(rects[3], 720, 1, 1)).toEqual({ x: 641, y: 0, w: 639, h: 359 });
+        const rects = tileRects(4, 1280, 720, layout("grid"));
+        expect(viewportRect(rects[0], 720, 1, 1)).toEqual({ x: 0, y: 362, w: 638, h: 358 });
+        expect(viewportRect(rects[3], 720, 1, 1)).toEqual({ x: 642, y: 0, w: 638, h: 358 });
+    });
+
+    test("writes into the given rectangle", () => {
+        const out = { x: 0, y: 0, w: 0, h: 0 };
+        expect(viewportRect({ x: 10, y: 20, w: 30, h: 40 }, 100, 1, 1, out)).toBe(out);
+        expect(out).toEqual({ x: 10, y: 40, w: 30, h: 40 });
+    });
+
+    test("panes a gap apart never share a framebuffer pixel at any scale", () => {
+        for (const scale of [0.5, 0.75, 1, 1.25, 1.5, 2]) {
+            for (const mode of LAYOUT_MODES) {
+                const rects = tileRects(9, 1048, 757, layout(mode, 1));
+                const views = rects.map((r) => viewportRect(r, 757, scale, scale));
+                for (let i = 0; i < views.length; i++) {
+                    for (let j = i + 1; j < views.length; j++) {
+                        expect(overlaps(views[i], views[j])).toBe(false);
+                    }
+                }
+            }
+        }
     });
 
     test("scales CSS pixels to framebuffer pixels", () => {
@@ -169,7 +404,7 @@ describe("viewportRect", () => {
 
     test("viewports of a grid stay inside the framebuffer", () => {
         for (let n = 1; n <= 16; n++) {
-            for (const rect of layoutRects(n, 1001, 333)) {
+            for (const rect of tileRects(n, 1001, 333, layout("grid"))) {
                 const v = viewportRect(rect, 333, 0.75, 0.75);
                 expect(v.x).toBeGreaterThanOrEqual(0);
                 expect(v.y).toBeGreaterThanOrEqual(0);
