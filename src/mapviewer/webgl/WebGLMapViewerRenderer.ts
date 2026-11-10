@@ -835,6 +835,8 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         const cameraX = camera.pos[0];
         const cameraY = camera.pos[1];
         const cameraZ = camera.pos[2];
+        // While following, a pinch must not pan by its midpoint drift.
+        inputManager.guardTouchPan = !!this.mapViewer.live?.isFollowing();
         this.handleInput(deltaTime);
         const wheelDelta = inputManager.takeWheelDelta();
         const live = this.mapViewer.live;

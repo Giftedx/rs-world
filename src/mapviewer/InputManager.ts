@@ -1,6 +1,14 @@
 import { vec2 } from "gl-matrix";
 import { IJoystickUpdateEvent } from "react-joystick-component/build/lib/Joystick";
 
+import {
+    TwoFingerIntent,
+    getPinchWheelDelta,
+    getTouchDistance,
+    getTouchMidpoint,
+    getTwoFingerIntent,
+} from "./TouchGesture";
+
 export function getMousePos(container: HTMLElement, event: MouseEvent | Touch): vec2 {
     const rect = container.getBoundingClientRect();
     const x = event.clientX - rect.left;
@@ -21,20 +29,11 @@ export function getAxisDeadzone(axis: number, zone: number): number {
 // Pixels a right press can move and still count as a click (opening the menu) rather than a pan.
 const PAN_CLICK_THRESHOLD = 4;
 
-// Wheel pixels per e-fold of pinch spread. Wheel zoom scales by exp(0.0015 per pixel) in ortho and
-// while following, so there the view tracks the fingers.
-const PINCH_WHEEL_PIXELS = 1 / 0.0015;
-
-function getTouchMidpoint(container: HTMLElement, touches: TouchList): vec2 {
-    const [x0, y0] = getMousePos(container, touches[0]);
-    const [x1, y1] = getMousePos(container, touches[1]);
-    return [(x0 + x1) / 2, (y0 + y1) / 2];
-}
-
-function getTouchDistance(touches: TouchList): number {
-    const dx = touches[0].clientX - touches[1].clientX;
-    const dy = touches[0].clientY - touches[1].clientY;
-    return Math.max(Math.hypot(dx, dy), 1);
+// Midpoint of the first two touches, relative to the container.
+function getMidpointPos(container: HTMLElement, touches: TouchList): vec2 {
+    const [clientX, clientY] = getTouchMidpoint(touches[0], touches[1]);
+    const rect = container.getBoundingClientRect();
+    return [clientX - rect.left, clientY - rect.top];
 }
 
 export class InputManager {
@@ -67,6 +66,13 @@ export class InputManager {
     // Touch mirrors the mouse: one finger drags like the left button, two fingers pan like a right
     // drag and pinch like the wheel. Finger spread at the last touch event, -1 with under two fingers.
     private pinchDistance: number = -1;
+    private pinchStartDistance: number = -1;
+    private twoFingerIntent: TwoFingerIntent = "pan";
+
+    // Set while a player is followed, where a pan stops following. A two-finger gesture then pans
+    // only when the fingers travel further than they spread, so a pinch zooms the orbit and its
+    // midpoint drift doesn't drop the follow.
+    guardTouchPan: boolean = false;
 
     pickX: number = -1;
     pickY: number = -1;
@@ -307,7 +313,7 @@ export class InputManager {
 
     private onTouchStart = (event: TouchEvent) => {
         event.preventDefault();
-        this.startTouchGesture(event.touches);
+        this.startTouchGesture(event.targetTouches);
     };
 
     private onTouchMove = (event: TouchEvent) => {
@@ -315,15 +321,27 @@ export class InputManager {
         if (!this.element) {
             return;
         }
-        const touches = event.touches;
+        // Only the fingers that went down on the scene: one held on the joystick is not a pinch.
+        const touches = event.targetTouches;
         if (touches.length >= 2) {
-            [this.mouseX, this.mouseY] = getTouchMidpoint(this.element, touches);
-            const distance = getTouchDistance(touches);
+            [this.mouseX, this.mouseY] = getMidpointPos(this.element, touches);
+            const distance = getTouchDistance(touches[0], touches[1]);
             if (this.pinchDistance !== -1) {
-                // Spreading the fingers zooms in, as scrolling the wheel away from you does.
-                this.wheelDelta += Math.log(this.pinchDistance / distance) * PINCH_WHEEL_PIXELS;
+                this.wheelDelta += getPinchWheelDelta(this.pinchDistance, distance);
             }
             this.pinchDistance = distance;
+            if (this.twoFingerIntent === "undecided" && this.isPanning()) {
+                this.twoFingerIntent = getTwoFingerIntent(
+                    Math.hypot(this.mouseX - this.panStartX, this.mouseY - this.panStartY),
+                    distance - this.pinchStartDistance,
+                );
+                if (this.twoFingerIntent === "pan") {
+                    // Pan from here on, without the travel that decided it.
+                    this.panX = this.mouseX;
+                    this.panY = this.mouseY;
+                    this.panMoved = true;
+                }
+            }
         } else if (touches.length === 1) {
             [this.mouseX, this.mouseY] = getMousePos(this.element, touches[0]);
         }
@@ -331,7 +349,7 @@ export class InputManager {
 
     private onTouchEnd = (event: TouchEvent) => {
         // Carry on with the fingers still down, from where they are, so the camera doesn't jump.
-        this.startTouchGesture(event.touches);
+        this.startTouchGesture(event.targetTouches);
     };
 
     private startTouchGesture(touches: TouchList) {
@@ -348,11 +366,12 @@ export class InputManager {
             this.dragX = this.mouseX;
             this.dragY = this.mouseY;
         } else {
-            [this.mouseX, this.mouseY] = getTouchMidpoint(this.element, touches);
-            this.panX = this.mouseX;
-            this.panY = this.mouseY;
-            this.panMoved = true;
-            this.pinchDistance = getTouchDistance(touches);
+            [this.mouseX, this.mouseY] = getMidpointPos(this.element, touches);
+            this.panX = this.panStartX = this.mouseX;
+            this.panY = this.panStartY = this.mouseY;
+            this.twoFingerIntent = this.guardTouchPan ? "undecided" : "pan";
+            this.panMoved = !this.guardTouchPan;
+            this.pinchDistance = this.pinchStartDistance = getTouchDistance(touches[0], touches[1]);
         }
     }
 
