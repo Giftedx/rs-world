@@ -896,11 +896,13 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         const inputManager = this.mapViewer.inputManager;
         const camera = this.mapViewer.camera;
 
-        // Moving the camera yourself (WASD, up/down, gamepad stick, touch drag) stops following;
+        // Moving the camera yourself (WASD, up/down, gamepad stick, two-finger drag) stops following;
         // rotating doesn't, it orbits the followed player instead.
         const cameraX = camera.pos[0];
         const cameraY = camera.pos[1];
         const cameraZ = camera.pos[2];
+        // While following, a pinch must not pan by its midpoint drift.
+        inputManager.guardTouchPan = !!this.mapViewer.live?.isFollowing();
         this.handleInput(deltaTime);
         const wheelDelta = inputManager.takeWheelDelta();
         const live = this.mapViewer.live;

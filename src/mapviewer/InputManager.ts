@@ -1,6 +1,14 @@
 import { vec2 } from "gl-matrix";
 import { IJoystickUpdateEvent } from "react-joystick-component/build/lib/Joystick";
 
+import {
+    TwoFingerIntent,
+    getPinchWheelDelta,
+    getTouchDistance,
+    getTouchMidpoint,
+    getTwoFingerIntent,
+} from "./TouchGesture";
+
 export function getMousePos(container: HTMLElement, event: MouseEvent | Touch): vec2 {
     const rect = container.getBoundingClientRect();
     const x = event.clientX - rect.left;
@@ -20,6 +28,13 @@ export function getAxisDeadzone(axis: number, zone: number): number {
 
 // Pixels a right press can move and still count as a click (opening the menu) rather than a pan.
 const PAN_CLICK_THRESHOLD = 4;
+
+// Midpoint of the first two touches, relative to the container.
+function getMidpointPos(container: HTMLElement, touches: TouchList): vec2 {
+    const [clientX, clientY] = getTouchMidpoint(touches[0], touches[1]);
+    const rect = container.getBoundingClientRect();
+    return [clientX - rect.left, clientY - rect.top];
+}
 
 export class InputManager {
     element?: HTMLElement;
@@ -48,13 +63,21 @@ export class InputManager {
     private panStartY: number = -1;
     private panMoved: boolean = false;
 
-    isTouch: boolean = false;
+    // Touch mirrors the mouse: one finger drags like the left button, two fingers pan like a right
+    // drag and pinch like the wheel. Finger spread at the last touch event, -1 with under two fingers.
+    private pinchDistance: number = -1;
+    private pinchStartDistance: number = -1;
+    private twoFingerIntent: TwoFingerIntent = "pan";
+
+    // Set while a player is followed, where a pan stops following. A two-finger gesture then pans
+    // only when the fingers travel further than they spread, so a pinch zooms the orbit and its
+    // midpoint drift doesn't drop the follow.
+    guardTouchPan: boolean = false;
 
     pickX: number = -1;
     pickY: number = -1;
 
     positionJoystickEvent?: IJoystickUpdateEvent;
-    cameraJoystickEvent?: IJoystickUpdateEvent;
 
     gamepadIndex?: number;
 
@@ -269,7 +292,6 @@ export class InputManager {
             this.deltaMouseX -= event.movementX;
             this.deltaMouseY -= event.movementY;
         }
-        this.isTouch = false;
     };
 
     private onMouseUp = (event: MouseEvent) => {
@@ -291,15 +313,7 @@ export class InputManager {
 
     private onTouchStart = (event: TouchEvent) => {
         event.preventDefault();
-        if (!this.element) {
-            return;
-        }
-        const [x, y] = getMousePos(this.element, event.touches[0]);
-        this.dragX = x;
-        this.dragY = y;
-        this.mouseX = x;
-        this.mouseY = y;
-        this.isTouch = true;
+        this.startTouchGesture(event.targetTouches);
     };
 
     private onTouchMove = (event: TouchEvent) => {
@@ -307,15 +321,59 @@ export class InputManager {
         if (!this.element) {
             return;
         }
-        const [x, y] = getMousePos(this.element, event.touches[0]);
-        this.mouseX = x;
-        this.mouseY = y;
+        // Only the fingers that went down on the scene: one held on the joystick is not a pinch.
+        const touches = event.targetTouches;
+        if (touches.length >= 2) {
+            [this.mouseX, this.mouseY] = getMidpointPos(this.element, touches);
+            const distance = getTouchDistance(touches[0], touches[1]);
+            if (this.pinchDistance !== -1) {
+                this.wheelDelta += getPinchWheelDelta(this.pinchDistance, distance);
+            }
+            this.pinchDistance = distance;
+            if (this.twoFingerIntent === "undecided" && this.isPanning()) {
+                this.twoFingerIntent = getTwoFingerIntent(
+                    Math.hypot(this.mouseX - this.panStartX, this.mouseY - this.panStartY),
+                    distance - this.pinchStartDistance,
+                );
+                if (this.twoFingerIntent === "pan") {
+                    // Pan from here on, without the travel that decided it.
+                    this.panX = this.mouseX;
+                    this.panY = this.mouseY;
+                    this.panMoved = true;
+                }
+            }
+        } else if (touches.length === 1) {
+            [this.mouseX, this.mouseY] = getMousePos(this.element, touches[0]);
+        }
     };
 
     private onTouchEnd = (event: TouchEvent) => {
+        // Carry on with the fingers still down, from where they are, so the camera doesn't jump.
+        this.startTouchGesture(event.targetTouches);
+    };
+
+    private startTouchGesture(touches: TouchList) {
         this.dragX = -1;
         this.dragY = -1;
-    };
+        this.panX = -1;
+        this.panY = -1;
+        this.pinchDistance = -1;
+        if (!this.element || touches.length === 0) {
+            return;
+        }
+        if (touches.length === 1) {
+            [this.mouseX, this.mouseY] = getMousePos(this.element, touches[0]);
+            this.dragX = this.mouseX;
+            this.dragY = this.mouseY;
+        } else {
+            [this.mouseX, this.mouseY] = getMidpointPos(this.element, touches);
+            this.panX = this.panStartX = this.mouseX;
+            this.panY = this.panStartY = this.mouseY;
+            this.twoFingerIntent = this.guardTouchPan ? "undecided" : "pan";
+            this.panMoved = !this.guardTouchPan;
+            this.pinchDistance = this.pinchStartDistance = getTouchDistance(touches[0], touches[1]);
+        }
+    }
 
     private onContextMenu = (event: MouseEvent) => {
         // The menu opens on right button release instead (see onMouseUp), so a drag can pan.
@@ -328,14 +386,6 @@ export class InputManager {
 
     onPositionJoystickStop = (event: IJoystickUpdateEvent) => {
         this.positionJoystickEvent = undefined;
-    };
-
-    onCameraJoystickMove = (event: IJoystickUpdateEvent) => {
-        this.cameraJoystickEvent = event;
-    };
-
-    onCameraJoystickStop = (event: IJoystickUpdateEvent) => {
-        this.cameraJoystickEvent = undefined;
     };
 
     private onFocusOut = () => {
@@ -357,7 +407,7 @@ export class InputManager {
         for (const key of this.keys.keys()) {
             this.keys.set(key, false);
         }
-        if (this.isDragging() && !this.isTouch) {
+        if (this.isDragging()) {
             this.dragX = this.mouseX;
             this.dragY = this.mouseY;
         }
