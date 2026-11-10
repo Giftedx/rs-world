@@ -147,6 +147,10 @@ On the engine side, see the deployment notes in [DESIGN.md](DESIGN.md#deploying-
 
 ## Credits
 
+- Multi-view and the ground items are ports of work by Stunned
+  ([TestingPurposes/rs-world](https://github.com/TestingPurposes/rs-world), BSD 2-Clause): the
+  multi-view branch (upstream pull request 4) and the world-state branch (upstream pull request 5)
+- The touch gestures are by Kaden Staker ([kadeski](https://github.com/kadeski), upstream pull request 1)
 - [rs-map-viewer](https://github.com/dennisdev/rs-map-viewer) by dennisdev (BSD 2-Clause), which
   credits Jagex, RuneLite, the OpenRS2 Archive, the RuneScape Archive, the OSRS Wiki, 2004scape,
   2009scape, RuneStar, Blurite and the RuneApps Model Viewer
