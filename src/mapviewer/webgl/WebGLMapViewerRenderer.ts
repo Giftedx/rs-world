@@ -1451,7 +1451,8 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             this.frameDrawCall.draw();
         }
 
-        for (let i = 0; i < paneCount; i++) {
+        // While panes move, each name overlay is its last picture, scaled with its frame.
+        for (let i = 0; i < paneCount && !multi.animating; i++) {
             const pane = panes[i];
             pane.overlay.draw(
                 pane.live,

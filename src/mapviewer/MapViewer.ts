@@ -356,6 +356,12 @@ export class MapViewer {
             return;
         }
         const multi = this.enterMulti();
+        if (multi.closing) {
+            // Asked for again on the way out: the wall stays.
+            multi.closing = false;
+            multi.onClosed = undefined;
+            multi.panes[multi.active].live.flights = false;
+        }
         const spare = multi.panes.slice();
         const panes = names.map((name) => {
             const key = name.toLowerCase();
@@ -583,6 +589,14 @@ export class MapViewer {
             return;
         }
         const keep = multi.panes[multi.active];
+        if (!multi.closing && multi.close()) {
+            // The selected pane grows to the full window first. A follow that arrives meanwhile
+            // is a flight, as in the single view.
+            keep.live.flights = true;
+            // After the frame that draws the pane at full size.
+            multi.onClosed = () => void Promise.resolve().then(() => this.leaveMulti());
+            return;
+        }
         for (const pane of multi.panes) {
             if (pane !== keep) {
                 pane.live.stop();

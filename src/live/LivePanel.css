@@ -195,6 +195,7 @@
 .multi-pane {
     position: absolute;
     box-sizing: border-box;
+    transform-origin: 0 0;
     outline: 1px solid rgba(0, 0, 0, 0.9);
     overflow: hidden;
 }

@@ -84,10 +84,21 @@ test("a frame with no change does no work: no message and the same rectangles", 
     view.layout(W, H, TRANSITION_MS);
     const before = panes.map(rectOf);
     const place = jest.spyOn(panes[0], "place");
+    const shift = jest.spyOn(panes[0], "shift");
     for (let t = 300; t < 400; t += 16) {
         view.layout(W, H, t);
     }
     expect(place).not.toHaveBeenCalled();
+    expect(shift).not.toHaveBeenCalled();
+    // The same panes asked for again: nothing moves, and the page is told the same rectangles.
+    view.reorder(panes.slice());
+    expect(view.wantsFrames()).toBe(true);
+    view.layout(W, H, 500);
+    expect(view.animating).toBe(false);
+    expect(view.wantsFrames()).toBe(false);
+    expect(infos).toHaveLength(3);
+    expect(infos[2]).toMatchObject({ animating: false, ms: 0 });
+    infos.pop();
     expect(infos).toHaveLength(2);
     expect(panes.map(rectOf)).toEqual(before);
 });
@@ -237,4 +248,65 @@ test("findPane takes a number in the asked order or a name in any case", () => {
     expect(view.findPane("Zed")).toBeUndefined();
     expect(view.findPane(7)).toBeUndefined();
     expect(view.findPane("")).toBeUndefined();
+});
+
+test("while a pane moves its DOM frame keeps its layout and follows with a transform", () => {
+    const { view, panes } = makeView(["Ann", "Bob"]);
+    view.layout(W, H, 0);
+    view.layout(W, H, TRANSITION_MS);
+    const [ann, bob] = panes;
+    const [left, right] = grid(2);
+    expect(ann.frame.style.transform).toBe("");
+    view.reorder([bob, ann]);
+    view.layout(W, H, 1000);
+    view.layout(W, H, 1000 + TRANSITION_MS / 2);
+    // Laid out where it was; moved by the transform to where the pane is drawn.
+    expect(ann.frame.style.left).toBe(`${left.x}px`);
+    expect(ann.frame.style.width).toBe(`${left.w}px`);
+    expect(ann.frame.style.transform).toBe(
+        `translate(${ann.rect.x - left.x}px,${ann.rect.y - left.y}px) scale(${
+            ann.rect.w / left.w
+        },${ann.rect.h / left.h})`,
+    );
+    view.layout(W, H, 1000 + TRANSITION_MS);
+    expect(ann.frame.style.transform).toBe("");
+    expect(ann.frame.style.left).toBe(`${right.x}px`);
+    // A new pane is laid out at its target and grows there.
+    const cat = makePane("Cat");
+    view.reorder([bob, ann, cat]);
+    view.layout(W, H, 2000);
+    const target = grid(3)[2];
+    expect(cat.frame.style.left).toBe(`${target.x}px`);
+    expect(cat.frame.style.transform).toContain("scale(0.6");
+});
+
+test("on the way back to the single view the selected pane grows to the full window", () => {
+    const { view, panes, retired } = makeView(["Ann", "Bob", "Cat"]);
+    const closed = jest.fn();
+    view.onClosed = closed;
+    view.layout(W, H, 0);
+    view.layout(W, H, TRANSITION_MS);
+    view.setActive(1);
+    expect(view.close()).toBe(true);
+    expect(view.panes).toEqual([panes[1]]);
+    view.layout(W, H, 1000);
+    expect(view.animating).toBe(true);
+    expect(view.drawList).toHaveLength(3);
+    view.layout(W, H, 1000 + TRANSITION_MS / 2);
+    expect(panes[1].rect.w).toBeGreaterThan(grid(3)[1].w);
+    expect(closed).not.toHaveBeenCalled();
+    view.layout(W, H, 1000 + TRANSITION_MS);
+    expect(rectOf(panes[1])).toEqual({ x: 0, y: 0, w: W, h: H });
+    expect(retired).toEqual(expect.arrayContaining([panes[0], panes[2]]));
+    expect(closed).toHaveBeenCalledTimes(1);
+});
+
+test("with reduced motion, or before the first frame, the way back is at once", () => {
+    const early = makeView(["Ann", "Bob"]);
+    expect(early.view.close()).toBe(false);
+    setReducedMotion(true);
+    const still = makeView(["Ann", "Bob"]);
+    still.view.layout(W, H, 0);
+    expect(still.view.close()).toBe(false);
+    expect(still.view.panes).toHaveLength(2);
 });

@@ -118,7 +118,8 @@ The views are tiled, and the main view is the first tile of every layout:
 
 A change of the views, their order, the layout or the main view moves each view from where it is to
 its new rectangle in 240 ms. A view is the same view while its player is asked for. A new view grows
-and fades in at its place; a closed view shrinks and fades out. While views move, the viewer draws
+and fades in at its place; a closed view shrinks and fades out. On `{multi: []}` the selected view
+grows to the full window and is then the single view. While views move, the viewer draws
 every display frame, whatever the `fps` limit; at rest a frame costs what it cost before. There is
 no move when the system asks for reduced motion (`prefers-reduced-motion`) or after
 `{multiLayout: {animate: false}}`, and a new window size is followed at once. `?tile=<mode>` sets

@@ -37,7 +37,10 @@ import {
 //
 // The panes are tiled (MultiLayout): a change of the panes, their order, the layout or the main pane
 // moves each pane from where it is to its new rectangle in TRANSITION_MS. A new pane grows and fades
-// in at its place; a closed pane shrinks and fades out, and is drawn until it is gone.
+// in at its place; a closed pane shrinks and fades out, and is drawn until it is gone. On the way
+// back to the single view the selected pane grows to the full window. While panes move, the GL view
+// of each is drawn every frame at its rectangle; its DOM frame follows with a transform and its name
+// overlay is not drawn again until the move ends.
 
 export type PaneHandlers = {
     rename(pane: MultiPane, name: string): void;
@@ -72,6 +75,9 @@ export class MultiPane {
     rect: PaneRect = { x: 0, y: 0, w: 1, h: 1 };
     readonly from: PaneRect = { x: 0, y: 0, w: 1, h: 1 };
     readonly to: PaneRect = { x: 0, y: 0, w: 1, h: 1 };
+    // The rectangle the DOM frame is laid out at. While the pane moves, the frame follows with a
+    // transform: nothing is laid out again and the name overlay is scaled like a picture.
+    readonly box: PaneRect = { x: 0, y: 0, w: 0, h: 0 };
     // The same rectangle in framebuffer pixels (the renderer fills it each frame).
     readonly viewport: PaneRect = { x: 0, y: 0, w: 1, h: 1 };
     // 1 is fully shown. A new pane fades in from 0 and a closed pane fades out to 0.
@@ -153,18 +159,35 @@ export class MultiPane {
         this.frame.appendChild(this.veil);
     }
 
-    // Moves the DOM frame to the pane's rectangle.
-    place(): void {
-        const rect = this.rect;
+    private fade(): void {
+        if (this.alpha !== this.veilAlpha) {
+            this.veilAlpha = this.alpha;
+            this.veil.style.opacity = (1 - this.alpha).toFixed(3);
+        }
+    }
+
+    // Lays the DOM frame out at a rectangle (the pane's own, if none is given).
+    place(rect: PaneRect = this.rect): void {
         const style = this.frame.style;
         style.left = `${rect.x}px`;
         style.top = `${rect.y}px`;
         style.width = `${rect.w}px`;
         style.height = `${rect.h}px`;
-        if (this.alpha !== this.veilAlpha) {
-            this.veilAlpha = this.alpha;
-            this.veil.style.opacity = (1 - this.alpha).toFixed(3);
-        }
+        style.transform = "";
+        copyRect(this.box, rect);
+        this.fade();
+    }
+
+    // Moves the DOM frame to the pane's rectangle with a transform of the laid-out box.
+    shift(): void {
+        const rect = this.rect;
+        const box = this.box;
+        const sx = rect.w / Math.max(box.w, 1);
+        const sy = rect.h / Math.max(box.h, 1);
+        this.frame.style.transform = `translate(${rect.x - box.x}px,${
+            rect.y - box.y
+        }px) scale(${sx},${sy})`;
+        this.fade();
     }
 
     // The name this pane follows, as it was asked for. A follow changed from the Live panel or a
@@ -203,6 +226,9 @@ export class MultiView {
     onLayout?: (info: MultiLayoutInfo) => void;
     // Told when a closed pane has faded out (or the view stopped): its feed can stop.
     onRetired?: (pane: MultiPane) => void;
+    // True while the selected pane grows to the full window on the way back to the single view.
+    closing: boolean = false;
+    onClosed?: () => void;
     private width = -1;
     private height = -1;
     private dirty = true;
@@ -384,6 +410,18 @@ export class MultiView {
         }
     }
 
+    // The way back to the single view: the selected pane grows to the full window and the others
+    // fade out, then onClosed is called. False when nothing moves (the caller leaves at once).
+    close(): boolean {
+        const keep = this.panes[this.active];
+        if (!keep || keep.enter || this.width < 0 || !this.animate || prefersReducedMotion()) {
+            return false;
+        }
+        this.reorder([keep]);
+        this.closing = true;
+        return true;
+    }
+
     // Leaves the panes' controllers running (one of them carries on as the single view).
     detach(): void {
         this.dropLeaving();
@@ -433,12 +471,17 @@ export class MultiView {
         }
         this.dropLeaving();
         this.refreshDrawList();
+        if (this.closing) {
+            this.onClosed?.();
+        }
     }
 
     // Starts a move to the layout's rectangles for the panes as they are now.
     private retarget(width: number, height: number, now: number, move: boolean): void {
         const order = mainFirst(this.panes, this.mainPane());
         const rects = tileRects(order.length, width, height, this.options);
+        // True when every pane is on its target already: then there is nothing to move.
+        let still = this.leaving.length === 0;
         for (let i = 0; i < order.length; i++) {
             const pane = order[i];
             const target = rects[i];
@@ -449,11 +492,20 @@ export class MultiView {
                     : shrunkRect(target, ENTER_SCALE);
                 pane.alpha = full ? 1 : 0;
                 pane.enter = "";
+                // The frame is laid out once, at the target.
+                pane.place(target);
             }
             copyRect(pane.from, pane.rect);
             copyRect(pane.to, target);
             pane.alphaFrom = pane.alpha;
             pane.alphaTo = 1;
+            still =
+                still &&
+                pane.alpha === 1 &&
+                pane.rect.x === target.x &&
+                pane.rect.y === target.y &&
+                pane.rect.w === target.w &&
+                pane.rect.h === target.h;
         }
         for (const pane of this.leaving) {
             if (pane.alphaTo !== 0) {
@@ -464,7 +516,7 @@ export class MultiView {
             pane.alphaTo = 0;
         }
         this.refreshDrawList();
-        if (move) {
+        if (move && !still) {
             this.animating = true;
             this.moveStart = now;
         } else {
@@ -504,7 +556,7 @@ export class MultiView {
             this.dirty = false;
             this.retarget(width, height, now, move);
             this.onLayout?.(this.layoutInfo(now));
-            if (!move) {
+            if (!this.animating) {
                 return;
             }
         }
@@ -523,7 +575,7 @@ export class MultiView {
             const pane = list[i];
             mixRect(pane.rect, pane.from, pane.to, e);
             pane.alpha = pane.alphaFrom + (pane.alphaTo - pane.alphaFrom) * e;
-            pane.place();
+            pane.shift();
         }
     }
 
