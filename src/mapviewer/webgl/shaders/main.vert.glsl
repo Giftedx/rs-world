@@ -139,7 +139,7 @@ void main() {
     // gl_Position.z += (float(vertex.priority)) * 0.0007;
     gl_Position.z += float(modelInfo.plane) * 0.005 + (float(vertex.priority) + float(modelInfo.priority)) * 0.0007;
     gl_Position = u_projectionMatrix * gl_Position;
-    if (modelInfo.hidden) {
+    if (modelInfo.hidden || float(modelInfo.plane) > u_maxPlane) {
         // Outside the clip volume: the whole instance is culled.
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     }

@@ -18,6 +18,10 @@ export const SQUARE_CACHE = params.get("cache") === "0" ? 0 : 160;
 export function postTiming(mode: "flight" | "snap", ms: number, tiles: number, frames: number, blankFrames: number, holdFrames: number): void {
     if (window.parent !== window) window.parent.postMessage({ viewerTiming: { mode, ms: Math.round(ms), tiles: Math.round(tiles), frames, blankFrames, holdFrames } }, "*");
 }
+// ?ml=<0-3> sets the highest floor drawn from the first frame; a {maxLevel} message changes it.
+export const isFloor = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 3;
+const firstFloor = parseInt(params.get("ml") ?? "");
+export const FIRST_MAX_LEVEL: number | undefined = isFloor(firstFloor) ? firstFloor : undefined;
 export const MAIN_MARK = "⟦MAIN⟧";
 
 // Embed camera: about 20 tiles out at roughly 50 degrees down, so the player and a few tiles around them fill

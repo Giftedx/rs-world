@@ -10,7 +10,7 @@ import { WorldMapModal } from "../components/rs/worldmap/WorldMapModal";
 import { InfoPanel } from "../live/InfoPanel";
 import { LiveOverlay } from "../live/LiveOverlay";
 import { LivePanel } from "../live/LivePanel";
-import { EMBED } from "../live/embed";
+import { EMBED, isFloor } from "../live/embed";
 import { RS_TO_DEGREES } from "../rs/MathConstants";
 import { isMobileDevice, isTouchDevice } from "../util/DeviceUtil";
 import { MapViewer } from "./MapViewer";
@@ -83,6 +83,8 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
             }
             if (typeof d.fps === "number" && d.fps > 0) renderer.fpsLimit = d.fps;
             if (typeof d.scale === "number" && d.scale > 0) renderer.resolutionScale = d.scale;
+            // Roof removal: the page names the highest floor to draw.
+            if (isFloor(d.maxLevel)) renderer.setFloorLimit(d.maxLevel);
         };
         window.addEventListener("message", onMessage);
         return () => window.removeEventListener("message", onMessage);
