@@ -17,6 +17,7 @@ import {
 } from "picogl";
 
 import { OsrsMenuEntry } from "../../components/rs/menu/OsrsMenu";
+import { WARM_RADIUS } from "../../live/CameraFlight";
 import { LiveController } from "../../live/LiveController";
 import { LiveEntity } from "../../live/LiveEntity";
 import { LiveEntityRenderer } from "../../live/LiveEntityRenderer";
@@ -204,6 +205,9 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     worldStateMaps?: WorldStateMaps;
     private worldStateManagers: MapManager<WebGLMapSquare>[] = [];
     liveOverlay: LiveOverlay = new LiveOverlay();
+    // Places the embedding page may follow next ({warm} message), and the one loaded last.
+    private warmTiles: [number, number][] = [];
+    private warmNext: number = -1;
 
     constructor(public mapViewer: MapViewer) {
         super(mapViewer);
@@ -733,6 +737,28 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         this.updateTextureArray(mapData.loadedTextures);
     }
 
+    override setWarmTiles(tiles: [number, number][]): void {
+        this.warmTiles = tiles;
+        this.warmNext = -1;
+    }
+
+    // Idle work: when nothing is loading, load the squares around the next place the page listed.
+    private warmStep(live: LiveController): void {
+        const tiles = this.warmTiles;
+        const maps = this.mapManager;
+        if (
+            tiles.length === 0 ||
+            live.inFlight ||
+            maps.loadingMapIds.size > 0 ||
+            this.mapsToLoad.length > 0 ||
+            maps.blankOnScreen > 0
+        ) {
+            return;
+        }
+        this.warmNext = (this.warmNext + 1) % tiles.length;
+        maps.prefetch(tiles[this.warmNext][0], tiles[this.warmNext][1], WARM_RADIUS);
+    }
+
     isValidMapData(mapData: SdMapData): boolean {
         return (
             mapData.cacheName === this.mapViewer.loadedCache.info.name &&
@@ -1129,6 +1155,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         }
         this.mapManager.cacheBudget = SQUARE_CACHE;
         live.maps = this.mapManager;
+        this.warmStep(live);
         live.canvas = this.canvas;
         live.update(
             clientTicksElapsed,

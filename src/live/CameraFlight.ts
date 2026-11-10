@@ -11,6 +11,10 @@ import { Camera } from "../mapviewer/Camera";
 //            the hundreds of tiles in between are not loaded and would draw black.
 //   descend: drop from the height into the follow orbit around the player.
 
+// The area a follow change waits for around the new player, and the area a prewarm loads: a prewarmed
+// player needs no load.
+export const WARM_RADIUS = 56;
+
 export type MapAccess = {
     prefetch(tileX: number, tileZ: number, radiusTiles: number): void;
     ready(tileX: number, tileZ: number, radiusTiles: number): boolean;

@@ -65,6 +65,9 @@ export abstract class MapViewerRenderer<T extends MapSquare = MapSquare> extends
     // The highest floor an embedding page wants drawn (0-3).
     setFloorLimit(level: number): void {}
 
+    // The places (tiles) an embedding page may follow next.
+    setWarmTiles(tiles: [number, number][]): void {}
+
     handleInput(deltaTime: number) {
         this.handleKeyInput(deltaTime);
         this.handleMouseInput();
