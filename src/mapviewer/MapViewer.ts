@@ -144,8 +144,15 @@ export class MapViewer {
         public npcSpawns: NpcSpawn[],
         readonly mapImageCache: Cache,
         cache: LoadedCache,
+        searchParams?: URLSearchParams,
     ) {
         this.renderer = new WebGLMapViewerRenderer(this);
+        // initCache queues the first map squares. The address must be known before that: its camera says which
+        // squares, and its live feed says that the squares carry no static npcs. A square that was asked for with
+        // other settings is thrown away, and the workers finish it before they start the right one.
+        if (searchParams) {
+            this.applySearchParams(searchParams);
+        }
         this.initCache(cache);
     }
 
@@ -296,9 +303,10 @@ export class MapViewer {
 
         this.isNewTextureAnim = cache.info.game === "runescape" && cache.info.revision >= 681;
 
-        this.renderer.initCache();
-
+        // The live feed first: it turns the static npcs off, which must not happen after squares are queued.
         this.initLive();
+
+        this.renderer.initCache();
 
         this.updateSearchParams();
     }

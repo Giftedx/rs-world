@@ -27,8 +27,16 @@ const cachesPromise = fetchCacheList();
 
 // Without shared memory each worker receives its own copy of the cache, so such a page gets two workers:
 // with prewarmed squares they serve a follow change as fast as four, for one cache copy more.
+// ?workers=N (1 to 8) sets the count: an embedding page that knows the device can ask for more or fewer.
+const askedWorkers = Number(new URLSearchParams(window.location.search).get("workers"));
 const workerPool = RenderDataWorkerPool.create(
-    isWallpaperEngine ? 1 : !isSharedMemorySupported || isTouchDevice ? 2 : 4,
+    Number.isInteger(askedWorkers) && askedWorkers >= 1 && askedWorkers <= 8
+        ? askedWorkers
+        : isWallpaperEngine
+          ? 1
+          : !isSharedMemorySupported || isTouchDevice
+            ? 2
+            : 4,
 );
 
 function MapViewerApp() {
@@ -62,8 +70,13 @@ function MapViewerApp() {
 
             const mapImageCache = await caches.open("map-images");
 
-            const mapViewer = new MapViewer(workerPool, npcSpawns, mapImageCache, cache);
-            mapViewer.applySearchParams(searchParams);
+            const mapViewer = new MapViewer(
+                workerPool,
+                npcSpawns,
+                mapImageCache,
+                cache,
+                searchParams,
+            );
             mapViewer.init();
 
             setDownloadProgress(undefined);
