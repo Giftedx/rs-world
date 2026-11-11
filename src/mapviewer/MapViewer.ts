@@ -115,6 +115,8 @@ export class MapViewer {
     // default, ?live=off disables it.
     liveUrl: string | undefined = getDefaultFeedUrl();
     liveParam: string | undefined;
+    // ?workers=N as asked. The worker pool reads it when the page loads; it stays in the address for a reload.
+    workersParam: string | undefined;
     live?: LiveController;
     followParam: string | undefined;
     // Locs, ground objs, projectiles and map anims from every feed (one store for all views).
@@ -144,8 +146,15 @@ export class MapViewer {
         public npcSpawns: NpcSpawn[],
         readonly mapImageCache: Cache,
         cache: LoadedCache,
+        searchParams?: URLSearchParams,
     ) {
         this.renderer = new WebGLMapViewerRenderer(this);
+        // initCache queues the first map squares. The address must be known before that: its camera says which
+        // squares, and its live feed says that the squares carry no static npcs. A square that was asked for with
+        // other settings is thrown away, and the workers finish it before they start the right one.
+        if (searchParams) {
+            this.applySearchParams(searchParams);
+        }
         this.initCache(cache);
     }
 
@@ -175,12 +184,18 @@ export class MapViewer {
         if (this.liveParam !== undefined) {
             params["live"] = this.liveParam;
         }
+        if (this.workersParam !== undefined) {
+            params["workers"] = this.workersParam;
+        }
         if (this.multi) {
             const multiParams: any = {
                 multi: this.multi.panes.map((p) => p.getAsked() ?? "").join(","),
             };
             if (this.liveParam !== undefined) {
                 multiParams["live"] = this.liveParam;
+            }
+            if (this.workersParam !== undefined) {
+                multiParams["workers"] = this.workersParam;
             }
             if (this.multiRenderDistance !== DEFAULT_MULTI_DISTANCE) {
                 multiParams["md"] = this.multiRenderDistance.toString();
@@ -213,6 +228,8 @@ export class MapViewer {
         if (searchParams.get("pt") === "o") {
             this.camera.projectionType = ProjectionType.ORTHO;
         }
+
+        this.workersParam = searchParams.get("workers") ?? undefined;
 
         const live = searchParams.get("live");
         if (live !== null) {
@@ -296,9 +313,10 @@ export class MapViewer {
 
         this.isNewTextureAnim = cache.info.game === "runescape" && cache.info.revision >= 681;
 
-        this.renderer.initCache();
-
+        // The live feed first: it turns the static npcs off, which must not happen after squares are queued.
         this.initLive();
+
+        this.renderer.initCache();
 
         this.updateSearchParams();
     }
