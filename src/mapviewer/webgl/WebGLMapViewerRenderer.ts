@@ -1086,6 +1086,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                 this.overlayExtra,
             );
         }
+        this.flushCaptures();
 
         // Load new map squares: as many as fit in the upload budget, at least one per frame.
         for (const uploadStart = performance.now(); ; ) {
@@ -1492,6 +1493,34 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     }
 
     drawBound = (drawCall: DrawCall, drawRanges: number[][]) => this.draw(drawCall, drawRanges);
+
+    // Screenshot (an embedding page's gallery): {capture: {id}} asks for the next drawn frame with its overlay, as one JPEG
+    // posted back as {viewerCapture: {id, url}} (url null when the frame cannot be read). It runs right after the frame's
+    // draw calls, while the drawing buffer still holds the frame.
+    pendingCaptures: string[] = [];
+    override requestCapture(id: string): void {
+        if (this.pendingCaptures.length < 4) this.pendingCaptures.push(id);
+    }
+    private flushCaptures(): void {
+        if (this.pendingCaptures.length === 0 || window.parent === window) return;
+        const ids = this.pendingCaptures.splice(0);
+        let url: string | null = null;
+        try {
+            const out = document.createElement("canvas");
+            out.width = this.canvas.width;
+            out.height = this.canvas.height;
+            const ctx = out.getContext("2d");
+            if (ctx && out.width > 0 && out.height > 0) {
+                ctx.drawImage(this.canvas, 0, 0);
+                const overlay = this.liveOverlay.canvas;
+                if (overlay.width > 0 && overlay.style.display !== "none") ctx.drawImage(overlay, 0, 0, out.width, out.height);
+                url = out.toDataURL("image/jpeg", 0.85);
+            }
+        } catch {
+            url = null;
+        }
+        for (const id of ids) window.parent.postMessage({ viewerCapture: { id, url } }, window.location.origin);
+    }
 
     // The markers layer (LiveOverlay.drawMarkers): the ground height at a fine position on a level, and an item's name.
     overlayExtra: OverlayExtra = {

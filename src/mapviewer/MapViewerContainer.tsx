@@ -100,6 +100,8 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
             if (typeof d.scale === "number" && d.scale > 0) renderer.resolutionScale = d.scale;
             // {overlay: {...}}: the highlights to draw (Markers.ts); each message replaces the ones before.
             if (d.overlay !== undefined) markers.setOverlay(d.overlay);
+            // {capture: {id}}: the next frame as a JPEG, sent back as {viewerCapture: {id, url}}.
+            if (d.capture && typeof d.capture.id === "string" && d.capture.id.length > 0) renderer.requestCapture(d.capture.id.slice(0, 40));
             // Roof removal: the page names the highest floor to draw.
             if (isFloor(d.maxLevel)) renderer.setFloorLimit(d.maxLevel);
             // {warm: [[x, z], ...]} lists the places the page may follow next.

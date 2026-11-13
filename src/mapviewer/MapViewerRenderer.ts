@@ -68,6 +68,9 @@ export abstract class MapViewerRenderer<T extends MapSquare = MapSquare> extends
     // The places (tiles) an embedding page may follow next.
     setWarmTiles(tiles: [number, number][]): void {}
 
+    // A screenshot of the next frame for an embedding page (WebGLMapViewerRenderer sends it back).
+    requestCapture(id: string): void {}
+
     handleInput(deltaTime: number) {
         this.handleKeyInput(deltaTime);
         this.handleMouseInput();
