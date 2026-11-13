@@ -1,4 +1,4 @@
-import { MarkerStore, groundColour, shortValue } from "./Markers";
+import { MarkerStore, clipSegment, groundColour, shortValue } from "./Markers";
 
 describe("markers", () => {
     test("an overlay message keeps only valid marks, within the caps", () => {
@@ -45,5 +45,14 @@ describe("markers", () => {
         expect(shortValue(15000)).toBe("15K");
         expect(shortValue(3_400_000)).toBe("3.4M");
         expect(shortValue(12_000_000)).toBe("12M");
+    });
+});
+
+describe("clipSegment", () => {
+    test("a long line keeps its part near the camera, and a line outside is dropped", () => {
+        // The Codex case: (3008, 3520)-(3392, 3520) with the camera at (3010, 3510), area 64 tiles around it.
+        expect(clipSegment(3008, 3520, 3392, 3520, 2946, 3446, 3074, 3574)).toEqual([3008, 3520, 3074, 3520]);
+        expect(clipSegment(3000, 3600, 3000, 3700, 2946, 3446, 3074, 3574)).toBeNull();
+        expect(clipSegment(0, 0, 10, 10, 2, 2, 4, 4)).toEqual([2, 2, 4, 4]);
     });
 });

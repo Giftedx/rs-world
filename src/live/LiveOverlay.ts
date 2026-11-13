@@ -6,7 +6,7 @@ import { IndexedSprite } from "../rs/sprite/IndexedSprite";
 import { LiveController } from "./LiveController";
 import { LiveEntity, LiveNpc, LivePlayer } from "./LiveEntity";
 import { FarPlayerLabel } from "./LiveEntityRenderer";
-import { groundColour, markers, shortValue } from "./Markers";
+import { clipSegment, groundColour, markers, shortValue } from "./Markers";
 
 // What the markers layer needs from the renderer: the ground height at a fine position on a level, and an item name.
 export type OverlayExtra = {
@@ -345,13 +345,18 @@ export class LiveOverlay {
                 if (mid) this.drawText(text, mid.x, mid.y - 6, colour);
             }
         };
+        // No floor limit (Follow Level off) draws every floor, as the entities do.
+        const top = Number.isFinite(maxLevel) ? maxLevel : 3;
         ctx.save();
         ctx.lineWidth = 2;
         ctx.textAlign = "center";
         ctx.font = "16px 'OSRS Small', sans-serif";
-        // Lines follow the ground: one point a tile.
-        for (const s of markers.lines) {
-            if (s.l > maxLevel || !near((s.x0 + s.x1) / 2, (s.z0 + s.z1) / 2, MARKER_DISTANCE + 32)) continue;
+        // Lines follow the ground: the part within MARKER_DISTANCE of the camera, one point a tile.
+        for (const line of markers.lines) {
+            if (line.l > top) continue;
+            const c = clipSegment(line.x0, line.z0, line.x1, line.z1, cx - MARKER_DISTANCE, cz - MARKER_DISTANCE, cx + MARKER_DISTANCE, cz + MARKER_DISTANCE);
+            if (!c) continue;
+            const s = { ...line, x0: c[0], z0: c[1], x1: c[2], z1: c[3] };
             const steps = Math.max(1, Math.round(Math.max(Math.abs(s.x1 - s.x0), Math.abs(s.z1 - s.z0))));
             ctx.strokeStyle = s.colour;
             ctx.beginPath();
@@ -374,25 +379,25 @@ export class LiveOverlay {
             }
         }
         for (const t of markers.tiles) {
-            if (t.l <= maxLevel && near(t.x, t.z)) tile(t.x, t.z, t.l, t.size, t.colour, !!t.fill, t.label);
+            if (t.l <= top && near(t.x, t.z)) tile(t.x, t.z, t.l, t.size, t.colour, !!t.fill, t.label);
         }
         for (const [n, colour] of npcMarked) {
             const size = n.size || 1;
             const x = n.x / 128 - size / 2;
             const z = n.z / 128 - size / 2;
-            if (n.level <= maxLevel && near(x, z)) tile(x, z, n.level, size, colour, false);
+            if (n.level <= top && near(x, z)) tile(x, z, n.level, size, colour, false);
         }
         if (markers.players.size > 0) {
             for (const p of controller.world.players.values()) {
                 const colour = markers.playerColour(p.getName());
                 const x = p.x / 128 - 0.5;
                 const z = p.z / 128 - 0.5;
-                if (colour && p.level <= maxLevel && near(x, z)) tile(x, z, p.level, 1, colour, false);
+                if (colour && p.level <= top && near(x, z)) tile(x, z, p.level, 1, colour, false);
             }
         }
         // Pies: green fills as the rock or tree comes back, over red, as the Mining plugin draws them.
         for (const pie of markers.pies) {
-            if (pie.l > maxLevel || !near(pie.x, pie.z)) continue;
+            if (pie.l > top || !near(pie.x, pie.z)) continue;
             const c = point(pie.x + 0.5, pie.z + 0.5, pie.l);
             if (!c) continue;
             const r = 8;
@@ -420,7 +425,7 @@ export class LiveOverlay {
         const state = controller.worldState;
         if (markers.groundOn && state) {
             for (const t of state.objTiles.values()) {
-                if (t.level > maxLevel || !near(t.x, t.z, LABEL_DISTANCE)) continue;
+                if (t.level > top || !near(t.x, t.z, LABEL_DISTANCE)) continue;
                 const c = point(t.x + 0.5, t.z + 0.5, t.level);
                 if (!c) continue;
                 const counts = new Map<number, number>();

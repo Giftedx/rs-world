@@ -91,4 +91,30 @@ export function shortValue(gp: number): string {
     return String(Math.round(gp));
 }
 
+// The part of the segment (x0, z0)-(x1, z1) inside the rectangle, or null (Liang-Barsky): a long ground line keeps the
+// part near the camera, though its middle is far away.
+export function clipSegment(x0: number, z0: number, x1: number, z1: number, minX: number, minZ: number, maxX: number, maxZ: number): [number, number, number, number] | null {
+    const dx = x1 - x0;
+    const dz = z1 - z0;
+    const p = [-dx, dx, -dz, dz];
+    const q = [x0 - minX, maxX - x0, z0 - minZ, maxZ - z0];
+    let t0 = 0;
+    let t1 = 1;
+    for (let i = 0; i < 4; i++) {
+        if (p[i] === 0) {
+            if (q[i] < 0) return null;
+            continue;
+        }
+        const r = q[i] / p[i];
+        if (p[i] < 0) {
+            if (r > t1) return null;
+            if (r > t0) t0 = r;
+        } else {
+            if (r < t0) return null;
+            if (r < t1) t1 = r;
+        }
+    }
+    return t0 < t1 ? [x0 + t0 * dx, z0 + t0 * dz, x0 + t1 * dx, z0 + t1 * dz] : null;
+}
+
 export const markers = new MarkerStore();
