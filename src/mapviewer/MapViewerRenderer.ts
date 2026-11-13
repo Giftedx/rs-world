@@ -69,7 +69,7 @@ export abstract class MapViewerRenderer<T extends MapSquare = MapSquare> extends
     setWarmTiles(tiles: [number, number][]): void {}
 
     // A screenshot of the next frame for an embedding page (WebGLMapViewerRenderer sends it back).
-    requestCapture(id: string): void {}
+    requestCapture(id: string, origin: string): void {}
 
     handleInput(deltaTime: number) {
         this.handleKeyInput(deltaTime);
