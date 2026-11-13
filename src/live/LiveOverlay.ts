@@ -255,8 +255,10 @@ export class LiveOverlay {
         for (let i = farNames.length - 1; i >= 0; i--) {
             const n = farNames[i];
             if (n.placed) {
+                // A marked player keeps its mark colour outside the streamed area too.
                 const ours = isNameHighlighted(n.name);
-                this.drawText(n.name, n.top.x, n.top.y - 8, ours ? "#ffc21a" : "#ffffff", ours ? n.alpha : n.alpha * OTHER_NAME_ALPHA);
+                const marked = markers.playerColour(n.name);
+                this.drawText(n.name, n.top.x, n.top.y - 8, marked ?? (ours ? "#ffc21a" : "#ffffff"), marked || ours ? n.alpha : n.alpha * OTHER_NAME_ALPHA);
             }
         }
         for (let i = overlays.length - 1; i >= 0; i--) {
