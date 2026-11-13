@@ -1086,6 +1086,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                 this.overlayExtra,
             );
         }
+        this.flushCaptures([this.liveOverlay.canvas]);
 
         // Load new map squares: as many as fit in the upload budget, at least one per frame.
         for (const uploadStart = performance.now(); ; ) {
@@ -1466,6 +1467,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                 this.overlayExtra,
             );
         }
+        this.flushCaptures(panes.slice(0, paneCount).map((pane) => pane.overlay.canvas));
 
         // Load new map squares: as many as fit in the upload budget, at least one per frame.
         for (const uploadStart = performance.now(); ; ) {
@@ -1492,6 +1494,42 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     }
 
     drawBound = (drawCall: DrawCall, drawRanges: number[][]) => this.draw(drawCall, drawRanges);
+
+    // Screenshot (an embedding page's gallery): {capture: {id}} asks for the next drawn frame with its overlay, as one JPEG
+    // posted back as {viewerCapture: {id, url}} to the origin of the page that asked (url null when the frame cannot be
+    // read). It runs right after the frame's draw calls (single view and multi-view), while the drawing buffer still
+    // holds the frame. Each overlay canvas (the single view's, or one per pane) is drawn at its place over the GL canvas.
+    pendingCaptures: { id: string; origin: string }[] = [];
+    override requestCapture(id: string, origin: string): void {
+        if (this.pendingCaptures.length < 4) this.pendingCaptures.push({ id, origin });
+    }
+    private flushCaptures(overlays: HTMLCanvasElement[]): void {
+        if (this.pendingCaptures.length === 0 || window.parent === window) return;
+        const asks = this.pendingCaptures.splice(0);
+        let url: string | null = null;
+        try {
+            const out = document.createElement("canvas");
+            out.width = this.canvas.width;
+            out.height = this.canvas.height;
+            const ctx = out.getContext("2d");
+            if (ctx && out.width > 0 && out.height > 0) {
+                ctx.drawImage(this.canvas, 0, 0);
+                const base = this.canvas.getBoundingClientRect();
+                const sx = base.width > 0 ? out.width / base.width : 1;
+                const sy = base.height > 0 ? out.height / base.height : 1;
+                for (const overlay of overlays) {
+                    if (overlay.width === 0 || !overlay.isConnected || overlay.style.display === "none") continue;
+                    const r = overlay.getBoundingClientRect();
+                    if (r.width > 0 && r.height > 0)
+                        ctx.drawImage(overlay, (r.left - base.left) * sx, (r.top - base.top) * sy, r.width * sx, r.height * sy);
+                }
+                url = out.toDataURL("image/jpeg", 0.85);
+            }
+        } catch {
+            url = null;
+        }
+        for (const { id, origin } of asks) window.parent.postMessage({ viewerCapture: { id, url } }, origin);
+    }
 
     // The markers layer (LiveOverlay.drawMarkers): the ground height at a fine position on a level, and an item's name.
     overlayExtra: OverlayExtra = {
