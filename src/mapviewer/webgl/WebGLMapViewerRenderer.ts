@@ -22,7 +22,7 @@ import { WARM_RADIUS } from "../../live/CameraFlight";
 import { LiveController } from "../../live/LiveController";
 import { LiveEntity } from "../../live/LiveEntity";
 import { LiveEntityRenderer } from "../../live/LiveEntityRenderer";
-import { LiveOverlay } from "../../live/LiveOverlay";
+import { LiveOverlay, OverlayExtra } from "../../live/LiveOverlay";
 import { viewportRect } from "../../live/MultiLayout";
 import { MultiView } from "../../live/MultiView";
 import { WorldStateMaps } from "../../live/WorldStateMaps";
@@ -1083,6 +1083,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                 renderDistance,
                 fogDepth,
                 this.liveRenderer.farLabels,
+                this.overlayExtra,
             );
         }
 
@@ -1462,6 +1463,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                 renderDistance,
                 fogDepth,
                 pane.farLabels,
+                this.overlayExtra,
             );
         }
 
@@ -1490,6 +1492,19 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     }
 
     drawBound = (drawCall: DrawCall, drawRanges: number[][]) => this.draw(drawCall, drawRanges);
+
+    // The markers layer (LiveOverlay.drawMarkers): the ground height at a fine position on a level, and an item's name.
+    overlayExtra: OverlayExtra = {
+        groundAt: (fineX: number, fineZ: number, level: number) => this.liveRenderer?.getGroundHeight(level, fineX, fineZ)?.y,
+        objName: (id: number) => {
+            try {
+                const name = this.mapViewer.objTypeLoader.load(id)?.name;
+                return name && name !== "null" ? name : undefined;
+            } catch {
+                return undefined;
+            }
+        },
+    };
 
     getLiveGroundY = (e: LiveEntity): number | undefined => {
         return this.liveRenderer?.getGroundHeight(e.level, e.x, e.z)?.y;

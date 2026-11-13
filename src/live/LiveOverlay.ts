@@ -6,6 +6,16 @@ import { IndexedSprite } from "../rs/sprite/IndexedSprite";
 import { LiveController } from "./LiveController";
 import { LiveEntity, LiveNpc, LivePlayer } from "./LiveEntity";
 import { FarPlayerLabel } from "./LiveEntityRenderer";
+import { groundColour, markers, shortValue } from "./Markers";
+
+// What the markers layer needs from the renderer: the ground height at a fine position on a level, and an item name.
+export type OverlayExtra = {
+    groundAt: (fineX: number, fineZ: number, level: number) => number | undefined;
+    objName: (id: number) => string | undefined;
+};
+
+// Markers are drawn this close to the camera (tiles).
+const MARKER_DISTANCE = 64;
 
 // Chat, combat and npc names are only drawn this close to the camera (tiles), so busy areas stay
 // readable. Player names go as far as players are drawn, fading into the fog with them.
@@ -95,6 +105,7 @@ export class LiveOverlay {
         renderDistance: number,
         fogDepth: number,
         farLabels: FarPlayerLabel[],
+        extra?: OverlayExtra,
     ): void {
         const canvas = this.canvas;
         const dpr = window.devicePixelRatio || 1;
@@ -121,6 +132,15 @@ export class LiveOverlay {
             entities.push(...world.npcs.values());
         }
 
+        // Npcs that the page marked: their names show in the mark colour.
+        const npcMarked = new Map<LiveEntity, string>();
+        if (markers.npcs.length > 0) {
+            for (const [nid, n] of world.npcs) {
+                const colour = markers.npcColour(nid, n.npcType?.id ?? -1);
+                if (colour) npcMarked.set(n, colour);
+            }
+        }
+
         // 1. What each nearby entity wants drawn, and where.
         const overlays: OverlayEntity[] = [];
         for (const e of entities) {
@@ -134,8 +154,9 @@ export class LiveOverlay {
             const nameAlpha = isFollowed ? 1 : getFogVisibility(dx, dz, renderDistance, fogDepth);
 
             const isPlayer = e instanceof LivePlayer;
+            const marked = isPlayer ? markers.playerColour(e.getName()) : npcMarked.get(e);
             const showName =
-                nameAlpha > 0 && (isFollowed || (isPlayer ? options.showPlayerNames : options.showNpcNames && near));
+                nameAlpha > 0 && (isFollowed || (isPlayer ? options.showPlayerNames : (options.showNpcNames || !!marked) && near));
             // Same windows as the client: health bar for 300 cycles after a hit, hitmarks 70.
             const combat = near && options.showCombat && e.combatCycle > loopCycle + 100 && e.totalHealth > 0;
             const chat = near && options.showChat && e.chatMessage !== null && e.chatTimer > 0;
@@ -163,8 +184,8 @@ export class LiveOverlay {
                 top,
                 head,
                 name: showName && !(isPlayer && isNameHidden(e.getName())) ? (isPlayer ? e.getName() : formatNpcName(e as LiveNpc)) : undefined,
-                nameColour: isFollowed ? "#ff981f" : isPlayer && isNameHighlighted(e.getName()) ? "#ffc21a" : isPlayer ? "#ffffff" : "#ffff00",
-                nameAlpha: isFollowed || !isPlayer || isNameHighlighted(e.getName()) ? nameAlpha : nameAlpha * OTHER_NAME_ALPHA,
+                nameColour: isFollowed ? "#ff981f" : marked ? marked : isPlayer && isNameHighlighted(e.getName()) ? "#ffc21a" : isPlayer ? "#ffffff" : "#ffff00",
+                nameAlpha: isFollowed || !isPlayer || !!marked || isNameHighlighted(e.getName()) ? nameAlpha : nameAlpha * OTHER_NAME_ALPHA,
                 nameY: top.y - 8,
                 chatY: chat ? head.y : undefined,
                 combat,
@@ -224,7 +245,10 @@ export class LiveOverlay {
             n.placed = this.occupy(n.top.x - half, y - 12, n.top.x + half, y + 2, false);
         }
 
-        // 3. Draw back to front: names, health bars, hitmarks, then chat on top like the client.
+        // 3. Draw back to front: markers on the ground, names, health bars, hitmarks, then chat on top like the client.
+        if (extra) {
+            this.drawMarkers(controller, camera, extra, maxLevel, width, height, npcMarked);
+        }
         ctx.textAlign = "center";
         ctx.textBaseline = "alphabetic";
         ctx.font = "16px 'OSRS Small', sans-serif";
@@ -276,6 +300,146 @@ export class LiveOverlay {
                 this.drawChat(o.e, o.head.x, o.chatY, loopCycle);
             }
         }
+    }
+
+    // The markers layer (Markers.ts): lines and tile outlines on the ground, the tiles under marked npcs and players,
+    // respawn pies, and floor item labels with their value. A point is projected at the ground height of its tile.
+    private drawMarkers(
+        controller: LiveController,
+        camera: Camera,
+        extra: OverlayExtra,
+        maxLevel: number,
+        width: number,
+        height: number,
+        npcMarked: Map<LiveEntity, string>,
+    ): void {
+        const ctx = this.ctx;
+        const cx = camera.getPosX();
+        const cz = camera.getPosZ();
+        const near = (x: number, z: number, d: number = MARKER_DISTANCE) => Math.abs(x - cx) <= d && Math.abs(z - cz) <= d;
+        const point = (tx: number, tz: number, l: number) => {
+            const fx = Math.round(tx * 128);
+            const fz = Math.round(tz * 128);
+            const y = extra.groundAt(fx, fz, l);
+            return y === undefined ? undefined : this.project(camera, fx, y, fz, width, height);
+        };
+        const tile = (x: number, z: number, l: number, size: number, colour: string, fill: boolean, text?: string) => {
+            const c = [point(x, z, l), point(x + size, z, l), point(x + size, z + size, l), point(x, z + size, l)];
+            if (c.some((p) => !p)) {
+                return;
+            }
+            ctx.beginPath();
+            ctx.moveTo(c[0]!.x, c[0]!.y);
+            for (let i = 1; i < 4; i++) ctx.lineTo(c[i]!.x, c[i]!.y);
+            ctx.closePath();
+            if (fill) {
+                ctx.globalAlpha = 0.25;
+                ctx.fillStyle = colour;
+                ctx.fill();
+                ctx.globalAlpha = 1;
+            }
+            ctx.strokeStyle = colour;
+            ctx.stroke();
+            if (text) {
+                const mid = point(x + size / 2, z + size / 2, l);
+                if (mid) this.drawText(text, mid.x, mid.y - 6, colour);
+            }
+        };
+        ctx.save();
+        ctx.lineWidth = 2;
+        ctx.textAlign = "center";
+        ctx.font = "16px 'OSRS Small', sans-serif";
+        // Lines follow the ground: one point a tile.
+        for (const s of markers.lines) {
+            if (s.l > maxLevel || !near((s.x0 + s.x1) / 2, (s.z0 + s.z1) / 2, MARKER_DISTANCE + 32)) continue;
+            const steps = Math.max(1, Math.round(Math.max(Math.abs(s.x1 - s.x0), Math.abs(s.z1 - s.z0))));
+            ctx.strokeStyle = s.colour;
+            ctx.beginPath();
+            let open = false;
+            for (let i = 0; i <= steps; i++) {
+                const t = i / steps;
+                const p = point(s.x0 + (s.x1 - s.x0) * t, s.z0 + (s.z1 - s.z0) * t, s.l);
+                if (!p) {
+                    open = false;
+                    continue;
+                }
+                if (open) ctx.lineTo(p.x, p.y);
+                else ctx.moveTo(p.x, p.y);
+                open = true;
+            }
+            ctx.stroke();
+            if (s.label) {
+                const mid = point((s.x0 + s.x1) / 2, (s.z0 + s.z1) / 2, s.l);
+                if (mid) this.drawText(s.label, mid.x, mid.y - 4, s.colour);
+            }
+        }
+        for (const t of markers.tiles) {
+            if (t.l <= maxLevel && near(t.x, t.z)) tile(t.x, t.z, t.l, t.size, t.colour, !!t.fill, t.label);
+        }
+        for (const [n, colour] of npcMarked) {
+            const size = n.size || 1;
+            const x = n.x / 128 - size / 2;
+            const z = n.z / 128 - size / 2;
+            if (n.level <= maxLevel && near(x, z)) tile(x, z, n.level, size, colour, false);
+        }
+        if (markers.players.size > 0) {
+            for (const p of controller.world.players.values()) {
+                const colour = markers.playerColour(p.getName());
+                const x = p.x / 128 - 0.5;
+                const z = p.z / 128 - 0.5;
+                if (colour && p.level <= maxLevel && near(x, z)) tile(x, z, p.level, 1, colour, false);
+            }
+        }
+        // Pies: green fills as the rock or tree comes back, over red, as the Mining plugin draws them.
+        for (const pie of markers.pies) {
+            if (pie.l > maxLevel || !near(pie.x, pie.z)) continue;
+            const c = point(pie.x + 0.5, pie.z + 0.5, pie.l);
+            if (!c) continue;
+            const r = 8;
+            const y = c.y - 24;
+            ctx.beginPath();
+            ctx.arc(c.x, y, r, 0, Math.PI * 2);
+            ctx.fillStyle = "#ff0000";
+            ctx.fill();
+            if (pie.p > 0) {
+                ctx.beginPath();
+                ctx.moveTo(c.x, y);
+                ctx.arc(c.x, y, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * pie.p);
+                ctx.closePath();
+                ctx.fillStyle = "#00ff00";
+                ctx.fill();
+            }
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = "#000000";
+            ctx.beginPath();
+            ctx.arc(c.x, y, r, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.lineWidth = 2;
+        }
+        // Floor item labels: one line a kind of item on the tile, the value from the page's prices, in RuneLite's tiers.
+        const state = controller.worldState;
+        if (markers.groundOn && state) {
+            for (const t of state.objTiles.values()) {
+                if (t.level > maxLevel || !near(t.x, t.z, LABEL_DISTANCE)) continue;
+                const c = point(t.x + 0.5, t.z + 0.5, t.level);
+                if (!c) continue;
+                const counts = new Map<number, number>();
+                for (const o of t.objs) counts.set(o.id, (counts.get(o.id) ?? 0) + o.count);
+                let y = c.y - 6;
+                for (const [id, count] of counts) {
+                    const name = extra.objName(id);
+                    if (!name) continue;
+                    const lower = name.toLowerCase();
+                    const price = markers.groundPrices.get(lower) ?? (lower === "coins" ? 1 : undefined);
+                    const value = price === undefined ? undefined : price * count;
+                    if (value !== undefined && value < markers.groundMin) continue;
+                    const text = name + (count > 1 ? " (" + count + ")" : "") + (value !== undefined ? " (" + shortValue(value) + " gp)" : "");
+                    this.drawText(text, c.x, y, value === undefined ? "#ffffff" : groundColour(value));
+                    y -= 14;
+                }
+            }
+        }
+        ctx.restore();
     }
 
     private resetGrid(width: number, height: number): void {

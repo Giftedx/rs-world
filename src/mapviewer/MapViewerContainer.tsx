@@ -11,6 +11,7 @@ import { InfoPanel } from "../live/InfoPanel";
 import { LiveOverlay } from "../live/LiveOverlay";
 import { LivePanel } from "../live/LivePanel";
 import { parseMultiDistance, parseMultiNames } from "../live/MultiLayout";
+import { markers } from "../live/Markers";
 import { EMBED, PROBE, isFloor } from "../live/embed";
 import { RS_TO_DEGREES } from "../rs/MathConstants";
 import { isMobileDevice, isTouchDevice } from "../util/DeviceUtil";
@@ -97,6 +98,8 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
             }
             if (typeof d.fps === "number" && d.fps > 0) renderer.fpsLimit = d.fps;
             if (typeof d.scale === "number" && d.scale > 0) renderer.resolutionScale = d.scale;
+            // {overlay: {...}}: the highlights to draw (Markers.ts); each message replaces the ones before.
+            if (d.overlay !== undefined) markers.setOverlay(d.overlay);
             // Roof removal: the page names the highest floor to draw.
             if (isFloor(d.maxLevel)) renderer.setFloorLimit(d.maxLevel);
             // {warm: [[x, z], ...]} lists the places the page may follow next.
