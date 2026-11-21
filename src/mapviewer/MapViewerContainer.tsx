@@ -167,7 +167,7 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
 
     const onMapClicked = useCallback(
         (x: number, y: number) => {
-            mapViewer.live?.unfollow();
+            mapViewer.live?.unfollow(true);
             mapViewer.camera.pos[0] = x;
             mapViewer.camera.pos[2] = y;
             mapViewer.camera.updated = true;

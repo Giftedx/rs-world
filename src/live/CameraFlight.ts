@@ -20,6 +20,7 @@ export type MapAccess = {
 };
 
 type Pose = { x: number; y: number; z: number; yaw: number; pitch: number };
+export type FlightTarget = { x: number; y: number; z: number };
 
 const RS_TO_RADIANS = Math.PI / 1024;
 const PREP_MAX_MS = 6000;
@@ -43,6 +44,9 @@ export class CameraFlight {
     private readonly from: Pose;
     private readonly near: Pose;
     private readonly end: Pose;
+    private readonly offsetX: number;
+    private readonly offsetY: number;
+    private readonly offsetZ: number;
     readonly started: number;
     readonly distance: number;
     readonly glide: boolean;
@@ -55,11 +59,13 @@ export class CameraFlight {
 
     constructor(
         camera: Camera,
-        readonly toX: number,
-        readonly toZ: number,
+        public toX: number,
+        public toZ: number,
         orbitDistance: number,
         orbitPitch: number,
         private readonly canvas?: HTMLElement,
+        initialTargetY: number = -0.75,
+        private readonly resolveTarget?: () => FlightTarget | undefined,
     ) {
         const now = performance.now();
         this.started = now;
@@ -67,22 +73,39 @@ export class CameraFlight {
         this.from = { x: camera.getPosX(), y: camera.pos[1], z: camera.getPosZ(), yaw: camera.yaw, pitch: camera.pitch };
         this.distance = Math.hypot(toX - this.from.x, toZ - this.from.z);
         this.glide = this.distance <= GLIDE_MAX;
-        // Final orbit pose around the player at ground level (the follow camera corrects for real height).
         const yaw = (this.from.yaw - 1024) * RS_TO_RADIANS;
         const pitch = orbitPitch * RS_TO_RADIANS;
+        this.offsetX = Math.cos(pitch) * Math.sin(yaw) * orbitDistance;
+        this.offsetY = Math.sin(pitch) * orbitDistance;
+        this.offsetZ = Math.cos(pitch) * Math.cos(yaw) * orbitDistance;
         this.end = {
-            x: toX + Math.cos(pitch) * Math.sin(yaw) * orbitDistance,
-            y: -0.75 + Math.sin(pitch) * orbitDistance,
-            z: toZ + Math.cos(pitch) * Math.cos(yaw) * orbitDistance,
+            x: toX + this.offsetX,
+            y: initialTargetY + this.offsetY,
+            z: toZ + this.offsetZ,
             yaw: this.from.yaw,
             pitch: orbitPitch,
         };
         this.near = {
             ...this.end,
-            x: toX + (this.end.x - toX) * NEAR_SCALE,
-            y: this.end.y * NEAR_SCALE,
-            z: toZ + (this.end.z - toZ) * NEAR_SCALE,
+            x: toX + this.offsetX * NEAR_SCALE,
+            y: initialTargetY + this.offsetY * NEAR_SCALE,
+            z: toZ + this.offsetZ * NEAR_SCALE,
         };
+    }
+
+    private syncTarget(): void {
+        const liveTarget = this.resolveTarget?.();
+        if (!liveTarget) {
+            return;
+        }
+        this.toX = liveTarget.x;
+        this.toZ = liveTarget.z;
+        this.end.x = liveTarget.x + this.offsetX;
+        this.end.y = liveTarget.y + this.offsetY;
+        this.end.z = liveTarget.z + this.offsetZ;
+        this.near.x = liveTarget.x + this.offsetX * NEAR_SCALE;
+        this.near.y = liveTarget.y + this.offsetY * NEAR_SCALE;
+        this.near.z = liveTarget.z + this.offsetZ * NEAR_SCALE;
     }
 
     // Moves the camera for this frame. Returns true when the flight has ended.
@@ -93,6 +116,7 @@ export class CameraFlight {
             this.phase = p;
             this.phaseStart = now;
         };
+        this.syncTarget();
         maps?.prefetch(this.toX, this.toZ, WARM_RADIUS);
 
         switch (this.phase) {

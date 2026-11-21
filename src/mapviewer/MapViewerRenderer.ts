@@ -60,6 +60,10 @@ export abstract class MapViewerRenderer<T extends MapSquare = MapSquare> extends
 
     queueLoadMap(mapX: number, mapY: number): void {}
 
+    // Terrain height at fine coordinates on a level, when that square's heightmap is loaded.
+    getTileGroundY?(level: number, fineX: number, fineZ: number): number | undefined;
+
+    // Live npcs replace the static spawn list; without a feed, fall back to it.
     setLoadNpcs?(enabled: boolean): void;
 
     // The highest floor an embedding page wants drawn (0-3).

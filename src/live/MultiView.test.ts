@@ -343,3 +343,91 @@ test("with reduced motion, or before the first frame, the way back is at once", 
     expect(still.view.close()).toBe(false);
     expect(still.view.panes).toHaveLength(2);
 });
+
+function makeStatusPane(opts: {
+    asked: string;
+    followName?: string;
+    pendingFollow?: string;
+    followed?: any;
+    rosterTick?: number;
+    rosterPlayers?: any[];
+    status?: string;
+}) {
+    const live = {
+        followName: opts.followName,
+        pendingFollow: opts.pendingFollow,
+        status: opts.status ?? "open",
+        world: {
+            rosterTick: opts.rosterTick ?? 1,
+            rosterPlayers: opts.rosterPlayers ?? [],
+        },
+        getFollowed: () => opts.followed,
+        stop: jest.fn(),
+    };
+    return new MultiPane({} as any, live as any, opts.asked, undefined);
+}
+
+describe("updateStatus and lifecycle", () => {
+    test("never reports shown until canShow is true and pane rect is positive", () => {
+        const annEntity: any = { id: 1, name: "Ann", x: 3200 * 128, z: 3200 * 128, level: 0 };
+        const bobEntity: any = { id: 2, name: "Bob", x: 3264 * 128, z: 3200 * 128, level: 0 };
+        const ann = makeStatusPane({ asked: "Ann", followName: "Ann", followed: annEntity });
+        const bob = makeStatusPane({ asked: "Bob", followName: "Bob", followed: bobEntity });
+        const view = new MultiView(true, () => {});
+        view.addPane(ann);
+        view.addPane(bob);
+        view.layout(W, H, 0);
+
+        // First call: only Ann's square is render-ready (canShow returns false for Bob).
+        const s1 = view.updateStatus(
+            () => 0,
+            false,
+            (e) => e === annEntity,
+        );
+        expect(s1).toEqual({ names: ["Ann", "Bob"], shown: ["Ann"], offline: [] });
+        expect(bob.statusText.textContent).toBe("finding…");
+
+        // Zero-sized rect blocks premature shown even if entity & terrain exist.
+        bob.rect.w = 0;
+        const sZero = view.updateStatus(() => 0, true, () => true);
+        expect(sZero?.shown).toEqual(["Ann"]);
+
+        // Once Bob becomes render-ready within <500ms, updateStatus emits immediately without waiting for throttle.
+        bob.rect.w = 200;
+        const s2 = view.updateStatus(() => 0, false, () => true);
+        expect(s2).toEqual({ names: ["Ann", "Bob"], shown: ["Ann", "Bob"], offline: [] });
+        // Immediate repeat with identical state is throttled.
+        expect(view.updateStatus(() => 0, false, () => true)).toBeUndefined();
+    });
+
+    test("chromeless client multi-view recovers pendingFollow when offline player comes online", () => {
+        const ann = makeStatusPane({
+            asked: "Ann",
+            followName: undefined,
+            pendingFollow: undefined,
+            rosterTick: 5,
+            rosterPlayers: [[1, "Ann", 3200, 3200, 0]],
+        });
+        const view = new MultiView(false, () => {});
+        view.setChrome(false);
+        view.addPane(ann);
+        view.layout(W, H, 0);
+
+        view.updateStatus(() => undefined, true);
+        expect(ann.live.pendingFollow).toBe("Ann");
+    });
+
+    test("disposes pane overlay canvas backing buffers when panes retire or stop", () => {
+        const { view, panes } = makeView(["Ann", "Bob"]);
+        panes[0].overlay.canvas.width = 256;
+        panes[0].overlay.canvas.height = 144;
+        view.layout(W, H, 0);
+        panes[1].overlay.canvas.width = 256;
+        panes[1].overlay.canvas.height = 144;
+        view.stop();
+        expect(panes[0].overlay.canvas.width).toBe(0);
+        expect(panes[0].overlay.canvas.height).toBe(0);
+        expect(panes[1].overlay.canvas.width).toBe(0);
+        expect(panes[1].overlay.canvas.height).toBe(0);
+    });
+});

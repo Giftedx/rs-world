@@ -12,6 +12,7 @@ export type WorldFeedHandlers = {
 type Area = { x: number; z: number; w: number; h: number };
 
 const MAX_RECONNECT_DELAY_MS = 15_000;
+const INITIAL_RECONNECT_DELAY_MS = 300;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 
 // Keeps one WebSocket to the engine's /worldfeed open, re-subscribing after reconnects.
@@ -34,7 +35,7 @@ export class WorldFeedClient {
         return typeof document !== "undefined" && document.hidden;
     }
 
-    private reconnectDelay = 1000;
+    private reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
     private reconnectTimer?: ReturnType<typeof setTimeout>;
     private heartbeatTimer?: ReturnType<typeof setInterval>;
     private stopped = false;
@@ -73,7 +74,7 @@ export class WorldFeedClient {
         if (previous && previous.readyState < WebSocket.CLOSING) {
             previous.close(1000, "Manual reconnect");
         }
-        this.reconnectDelay = 1000;
+        this.reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
         this.error = undefined;
         this.stopped = false;
         this.open();
@@ -122,7 +123,11 @@ export class WorldFeedClient {
         this.ws = ws;
 
         ws.onopen = () => {
-            this.reconnectDelay = 1000;
+            if (this.stopped || this.ws !== ws) {
+                ws.close();
+                return;
+            }
+            this.reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
             this.setStatus("open");
             this.sendArea();
             if (this.roster) {

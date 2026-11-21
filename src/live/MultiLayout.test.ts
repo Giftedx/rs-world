@@ -19,6 +19,7 @@ import {
     parseRatio,
     parseShares,
     parseStrip,
+    prioritizeMultiSquares,
     reorderBy,
     sameShares,
     shrunkRect,
@@ -559,5 +560,20 @@ describe("row, column and strip shares", () => {
                 }
             }
         }
+    });
+});
+
+describe("prioritizeMultiSquares", () => {
+    test("loads every camera's standing square round-robin before outer neighbors", () => {
+        const ids = prioritizeMultiSquares(
+            [
+                [3202, 3202], // square (50, 50), very close to borders (49,50) and (50,49)
+                [2650, 3100], // square (41, 48)
+                [2900, 3500], // square (45, 54)
+            ],
+            80,
+        );
+        expect(ids.slice(0, 3)).toEqual([id(50, 50), id(41, 48), id(45, 54)]);
+        expect(new Set(ids).size).toBe(ids.length);
     });
 });

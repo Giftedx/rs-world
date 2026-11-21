@@ -2,7 +2,7 @@ import { vec4 } from "gl-matrix";
 
 import { MapFileIndex, getMapSquareId } from "../rs/map/MapFileIndex";
 import { Scene } from "../rs/scene/Scene";
-import { squareBounds, squaresNeeded } from "../live/MultiLayout";
+import { prioritizeMultiSquares, squareBounds } from "../live/MultiLayout";
 import { Camera } from "./Camera";
 
 function getMapDistance(x: number, z: number, mapX: number, mapY: number): number {
@@ -35,6 +35,8 @@ export class MapManager<T extends MapSquare> {
 
     invalidMapIds: Set<number> = new Set();
     loadingMapIds: Set<number> = new Set();
+    // Squares whose worker build finished and await GL upload; kept separate so worker slots stay busy.
+    pendingUploadIds: Set<number> = new Set();
 
     renderBounds: vec4 = vec4.fromValues(-1, -1, -1, -1);
 
@@ -107,6 +109,7 @@ export class MapManager<T extends MapSquare> {
     clearMaps(): void {
         this.invalidMapIds.clear();
         this.loadingMapIds.clear();
+        this.pendingUploadIds.clear();
         for (const map of this.mapSquares.values()) {
             map.delete();
         }
@@ -117,9 +120,27 @@ export class MapManager<T extends MapSquare> {
         return this.mapSquares.get(getMapSquareId(mapX, mapY));
     }
 
+    markWorkerDone(mapX: number, mapY: number): void {
+        const mapId = getMapSquareId(mapX, mapY);
+        this.loadingMapIds.delete(mapId);
+        this.pendingUploadIds.add(mapId);
+    }
+
+    cancelWorker(mapX: number, mapY: number): void {
+        const mapId = getMapSquareId(mapX, mapY);
+        this.loadingMapIds.delete(mapId);
+        this.pendingUploadIds.delete(mapId);
+    }
+
+    canRenderAt(tileX: number, tileZ: number): boolean {
+        const map = this.mapSquares.get(getMapSquareId(tileX >> 6, tileZ >> 6));
+        return !!map && map.canRender(this.frameCount);
+    }
+
     addMap(mapX: number, mapY: number, mapSquare: T): void {
         const mapId = getMapSquareId(mapX, mapY);
         this.loadingMapIds.delete(mapId);
+        this.pendingUploadIds.delete(mapId);
         this.invalidMapIds.delete(mapId);
         this.mapSquares.set(mapId, mapSquare);
         this.lastUsed.set(mapId, ++this.useClock);
@@ -168,6 +189,7 @@ export class MapManager<T extends MapSquare> {
         const mapId = getMapSquareId(mapX, mapY);
         this.invalidMapIds.add(mapId);
         this.loadingMapIds.delete(mapId);
+        this.pendingUploadIds.delete(mapId);
     }
 
     loadMap(mapX: number, mapY: number): void {
@@ -176,6 +198,7 @@ export class MapManager<T extends MapSquare> {
             this.mapSquares.has(mapId) ||
             this.invalidMapIds.has(mapId) ||
             this.loadingMapIds.has(mapId) ||
+            this.pendingUploadIds.has(mapId) ||
             this.loadingMapIds.size > this.maxQueuedTasks
         ) {
             return;
@@ -309,17 +332,25 @@ export class MapManager<T extends MapSquare> {
         frameCount: number,
         renderDistance: number,
         unloadDistance: number,
+        targets?: readonly (readonly [number, number])[],
     ): void {
         this.frameCount = frameCount;
         this.blankOnScreen = 0;
-        const bounds = cameras.map((c) => squareBounds(c.getPosX(), c.getPosZ(), renderDistance));
+        if (cameras.length === 0 && (!targets || targets.length === 0)) {
+            return;
+        }
+        const centers =
+            targets && targets.length > 0
+                ? targets
+                : cameras.map((c) => [c.getPosX(), c.getPosZ()] as const);
+        const bounds = centers.map(([x, z]) => squareBounds(x, z, renderDistance));
         const key = bounds.map((b) => b.join(",")).join(";");
         if (key !== this.multiKey) {
             this.multiKey = key;
             // The single view's bounds are stale now: it works them out again when it comes back.
             this.renderBounds.fill(-1);
-            this.multiWanted = squaresNeeded(
-                cameras.map((c) => [c.getPosX(), c.getPosZ()] as const),
+            this.multiWanted = prioritizeMultiSquares(
+                centers,
                 renderDistance,
                 (mapId) => this.invalidMapIds.has(mapId),
             );
@@ -353,7 +384,12 @@ export class MapManager<T extends MapSquare> {
             if (this.loadingMapIds.size > this.maxQueuedTasks) {
                 break;
             }
-            if (!this.mapSquares.has(mapId)) {
+            if (
+                !this.mapSquares.has(mapId) &&
+                !this.loadingMapIds.has(mapId) &&
+                !this.pendingUploadIds.has(mapId) &&
+                !this.invalidMapIds.has(mapId)
+            ) {
                 this.loadMap(mapId >> 8, mapId & 0xff);
             }
         }

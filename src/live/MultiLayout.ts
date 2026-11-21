@@ -386,6 +386,55 @@ function squareDistance(x: number, z: number, mapX: number, mapY: number): numbe
     return Math.sqrt(dx * dx + dz * dz);
 }
 
+// The union of the map squares a set of cameras needs, round-robin nearest first per camera,
+// so multi-view panes each receive their standing square before any pane loads outer tiles.
+// Ids are (mapX << 8) | mapY, like getMapSquareId.
+export function prioritizeMultiSquares(
+    cameras: readonly (readonly [number, number])[],
+    renderDistance: number,
+    isInvalid?: (mapId: number) => boolean,
+): number[] {
+    const perCamera: number[][] = [];
+    let maxLen = 0;
+    for (const [x, z] of cameras) {
+        const list: [number, number][] = [];
+        const [startX, startY, endX, endY] = squareBounds(x, z, renderDistance);
+        for (let mapX = startX; mapX < endX; mapX++) {
+            for (let mapY = startY; mapY < endY; mapY++) {
+                if (mapX < 0 || mapY < 0 || mapX >= MAX_MAP_X || mapY >= MAX_MAP_Y) {
+                    continue;
+                }
+                const mapId = (mapX << 8) | mapY;
+                if (isInvalid?.(mapId)) {
+                    continue;
+                }
+                list.push([mapId, squareDistance(x, z, mapX, mapY)]);
+            }
+        }
+        list.sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+        const ids = list.map((entry) => entry[0]);
+        perCamera.push(ids);
+        if (ids.length > maxLen) {
+            maxLen = ids.length;
+        }
+    }
+    const seen = new Set<number>();
+    const result: number[] = [];
+    for (let ring = 0; ring < maxLen; ring++) {
+        for (let c = 0; c < perCamera.length; c++) {
+            const list = perCamera[c];
+            if (ring < list.length) {
+                const mapId = list[ring];
+                if (!seen.has(mapId)) {
+                    seen.add(mapId);
+                    result.push(mapId);
+                }
+            }
+        }
+    }
+    return result;
+}
+
 // The union of the map squares a set of cameras needs, each once, nearest to any camera first.
 // Ids are (mapX << 8) | mapY, like getMapSquareId.
 export function squaresNeeded(

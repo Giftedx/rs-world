@@ -27,6 +27,7 @@ import {
     postMultiLayout,
     postMultiPick,
     postMultiStatus,
+    resolveFollow,
 } from "../live/embed";
 import { MenuTargetType } from "../rs/MenuEntry";
 import { CacheSystem } from "../rs/cache/CacheSystem";
@@ -386,10 +387,13 @@ export class MapViewer {
         }
         const spare = multi.panes.slice();
         const panes = names.map((name) => {
+            const desired = resolveFollow(name);
             const key = name.toLowerCase();
+            const resolvedKey = desired?.toLowerCase();
             const index = spare.findIndex(
                 (p) =>
                     p.asked?.toLowerCase() === key ||
+                    (!!resolvedKey && p.live.followName?.toLowerCase() === resolvedKey) ||
                     (!p.asked &&
                         (p.live.followName ?? p.live.pendingFollow)?.toLowerCase() === key),
             );
@@ -409,9 +413,18 @@ export class MapViewer {
             // player until it closes, so a pane that moves is always the same player.
             const fresh = spare.findIndex((p) => p.enter !== "");
             const pane = fresh === -1 ? this.makePane(from) : spare.splice(fresh, 1)[0];
+            const desired = resolveFollow(names[i]);
+            const resolvedKey = desired?.toLowerCase();
             pane.asked = names[i];
-            pane.live.unfollow();
-            pane.live.pendingFollow = names[i];
+            if (
+                !resolvedKey ||
+                pane.live.followName?.toLowerCase() !== resolvedKey
+            ) {
+                pane.live.unfollow();
+                pane.live.pendingFollow = names[i];
+            } else {
+                pane.live.pendingFollow = undefined;
+            }
             return pane;
         });
         // The panes left in spare close: reorder() fades them out and onRetired stops their feeds.
@@ -421,6 +434,12 @@ export class MapViewer {
         }
         this.applyMultiLayout();
         this.wireRoster();
+        const getTileGroundY = this.renderer.getTileGroundY;
+        for (const pane of multi.panes) {
+            if (pane.live.pendingFollow) {
+                pane.live.resolvePending(pane.camera, getTileGroundY);
+            }
+        }
         this.syncActivePane();
         this.updateSearchParams();
     }
@@ -641,6 +660,7 @@ export class MapViewer {
         for (const pane of multi.panes) {
             if (pane !== keep) {
                 pane.live.stop();
+                pane.overlay.dispose();
             }
         }
         multi.detach();
@@ -704,7 +724,13 @@ export class MapViewer {
         if (!multi) {
             return;
         }
-        const last = multi.panes.map((p) => p.live.rosterSnapshot()).find((r) => r);
+        let newest: ReturnType<LiveController["rosterSnapshot"]> = undefined;
+        for (const pane of multi.panes) {
+            const snap = pane.live.rosterSnapshot();
+            if (snap && (!newest || snap.k > newest.k)) {
+                newest = snap;
+            }
+        }
         multi.panes.forEach((pane, i) => {
             pane.live.rosterListeners.length = 0;
             pane.live.feed.setRoster(i === 0);
@@ -717,9 +743,13 @@ export class MapViewer {
                 }
             }
         });
-        // A pane that takes over the roster has none of its own until the next one arrives.
-        if (last && source.world.rosterTick === -1) {
-            source.world.applyRoster(last);
+        // Push the freshest known roster snapshot to any pane behind it so every pane resolves immediately.
+        if (newest) {
+            for (const pane of multi.panes) {
+                if (pane.live.world.rosterTick < newest.k) {
+                    pane.live.world.applyRoster(newest);
+                }
+            }
         }
     }
 

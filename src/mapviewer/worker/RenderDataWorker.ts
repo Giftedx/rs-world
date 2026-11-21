@@ -34,8 +34,10 @@ import { RenderDataLoader, renderDataLoaderSerializer } from "./RenderDataLoader
 
 registerSerializer(renderDataLoaderSerializer);
 
-const compressionPromise = Promise.all([Bzip2.initWasm(), Gzip.initWasm()]);
-const hasherPromise = Hasher.init();
+export type WorkerWasm = {
+    bz2?: WebAssembly.Module | ArrayBuffer;
+    gzip?: WebAssembly.Module | ArrayBuffer;
+};
 
 export type WorkerState = {
     cache: LoadedCache;
@@ -73,9 +75,12 @@ export type WorkerState = {
 
 let workerStatePromise: Promise<WorkerState> | undefined;
 
-async function initWorker(cache: LoadedCache, npcSpawns: NpcSpawn[]): Promise<WorkerState> {
-    await compressionPromise;
-    await hasherPromise;
+async function initWorker(
+    cache: LoadedCache,
+    npcSpawns: NpcSpawn[],
+    wasm?: WorkerWasm,
+): Promise<WorkerState> {
+    await Promise.all([Bzip2.initWasm(wasm?.bz2), Gzip.initWasm(wasm?.gzip), Hasher.init()]);
 
     const cacheSystem = CacheSystem.fromFiles(cache.type, cache.files);
 
@@ -222,9 +227,9 @@ function clearCache(workerState: WorkerState): void {
 }
 
 const worker = {
-    initCache(cache: LoadedCache, npcSpawns: NpcSpawn[]) {
+    initCache(cache: LoadedCache, npcSpawns: NpcSpawn[], wasm?: WorkerWasm) {
         console.log("init worker", cache.info);
-        workerStatePromise = initWorker(cache, npcSpawns);
+        workerStatePromise = initWorker(cache, npcSpawns, wasm);
     },
     initDataLoader<I, D>(dataLoader: RenderDataLoader<I, D>) {
         dataLoader.init();
