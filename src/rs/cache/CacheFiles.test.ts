@@ -169,6 +169,67 @@ describe("CacheFiles deduplication, prefetch coordination and range handling", (
         );
     });
 
+    test("awaits __atlasCachePrefetch Promise<boolean> entries (shim.js / earlyCacheScript) and re-checks Cache API without refetching", async () => {
+        const memCache = makeMemoryCache();
+        (globalThis as any).caches = { open: jest.fn(async () => memCache) };
+
+        const datBytes = new Uint8Array([42, 43, 44, 45]);
+        let finishDatPut!: () => void;
+        const datPromise = new Promise<boolean>((resolve) => {
+            finishDatPut = () => {
+                memCache.put(
+                    "/runelite/viewer/caches/rs-sdk-289/main_file_cache.dat",
+                    makeStreamResponse(datBytes, 200) as any,
+                );
+                resolve(true);
+            };
+        });
+        const files = new Map<string, Promise<boolean>>([
+            ["/runelite/viewer/caches/rs-sdk-289/main_file_cache.dat", datPromise],
+        ]);
+        for (let i = 0; i < 5; i++) {
+            const p = `/runelite/viewer/caches/rs-sdk-289/main_file_cache.idx${i}`;
+            memCache.put(p, makeStreamResponse(new Uint8Array([i + 1]), 200) as any);
+            files.set(p, Promise.resolve(true));
+        }
+
+        const parentDesc = Object.getOwnPropertyDescriptor(window, "parent");
+        Object.defineProperty(window, "parent", {
+            configurable: true,
+            value: {
+                __atlasCachePrefetch: {
+                    ready: Promise.resolve(),
+                    files,
+                },
+            },
+        });
+        const fetchMock = jest.fn(() => {
+            throw new Error("should not issue duplicate network fetch when prefetch resolves true");
+        });
+        (globalThis as any).fetch = fetchMock;
+
+        try {
+            const pending = CacheFiles.fetchDat(
+                "/runelite/viewer/caches/rs-sdk-289/",
+                "rs-sdk-289",
+            );
+            // Finish early prefetch cache.put while CacheFiles is waiting on the in-flight entry.
+            await new Promise((r) => setTimeout(r, 0));
+            finishDatPut();
+
+            const result = await pending;
+            expect(fetchMock).not.toHaveBeenCalled();
+            expect(new Uint8Array(result.files.get("main_file_cache.dat")!)).toEqual(datBytes);
+            expect(new Uint8Array(result.files.get("main_file_cache.idx4")!)).toEqual(
+                new Uint8Array([5]),
+            );
+        } finally {
+            if (parentDesc) {
+                Object.defineProperty(window, "parent", parentDesc);
+            }
+        }
+    });
+
     test("drops stale partial prefix when server replies 200 instead of 206, and handles 416 exact EOF", async () => {
         // Case 1: offset > 0 and server returns 200 OK full payload -> must not duplicate prefix.
         const part0 = makeStreamResponse(new Uint8Array([1, 2]), 200, { "Cache-Part": "0" });

@@ -249,7 +249,7 @@ type CachedFile = {
 
 type AtlasCachePrefetch = {
     ready?: Promise<unknown>;
-    files?: Map<string, Promise<ArrayBuffer>>;
+    files?: Map<string, Promise<boolean | ArrayBuffer | undefined>>;
 };
 
 type InFlightEntry = {
@@ -298,8 +298,27 @@ function toTargetBuffer(raw: ArrayBuffer, shared: boolean): ArrayBuffer {
     return raw;
 }
 
-async function takePrefetchedBuffer(path: string): Promise<ArrayBuffer | undefined> {
-    const resolved = resolvePrefetchPath(path);
+async function matchCached(
+    cache: Cache,
+    path: string,
+    resolved: string,
+): Promise<Response | undefined> {
+    const direct = await cache.match(path);
+    if (direct) {
+        return direct;
+    }
+    if (resolved !== path) {
+        return await cache.match(resolved);
+    }
+    return undefined;
+}
+
+async function takePrefetchedBuffer(
+    path: string,
+    resolved: string,
+    cache: Cache,
+    progressListener: ProgressListener,
+): Promise<ArrayBuffer | undefined> {
     const holders: (AtlasCachePrefetch | undefined)[] = [];
     holders.push((globalThis as { __atlasCachePrefetch?: AtlasCachePrefetch }).__atlasCachePrefetch);
     try {
@@ -322,11 +341,29 @@ async function takePrefetchedBuffer(path: string): Promise<ArrayBuffer | undefin
             }
             const filePromise = holder.files?.get(resolved) ?? holder.files?.get(path);
             if (!filePromise) {
+                const raced = await matchCached(cache, path, resolved);
+                if (raced) {
+                    const parts = await toBufferParts(raced, 0, progressListener);
+                    return partsToBuffer(parts, false);
+                }
                 continue;
             }
-            const buffer = await filePromise;
-            if (buffer && buffer.byteLength > 0) {
-                return buffer;
+            const result = await filePromise;
+            if (result instanceof ArrayBuffer && result.byteLength > 0) {
+                progressListener({
+                    total: result.byteLength,
+                    current: result.byteLength,
+                    part: new Uint8Array(0),
+                });
+                return result;
+            }
+            if (result) {
+                // Early prefetchers (shim.js / earlyCacheScript) store into Cache API then resolve true.
+                const cachedResp = await matchCached(cache, path, resolved);
+                if (cachedResp) {
+                    const parts = await toBufferParts(cachedResp, 0, progressListener);
+                    return partsToBuffer(parts, false);
+                }
             }
         } catch {
             // Fall through to Cache API / network fetch on prefetch error.
@@ -361,19 +398,15 @@ async function downloadCachedFile(
     signal: AbortSignal,
     progressListener: ProgressListener,
 ): Promise<ArrayBuffer> {
-    const cachedResp = await cache.match(path);
+    const resolved = resolvePrefetchPath(path);
+    const cachedResp = await matchCached(cache, path, resolved);
     if (cachedResp) {
         const parts = await toBufferParts(cachedResp, 0, progressListener);
         return partsToBuffer(parts, false);
     }
 
-    const prefetched = await takePrefetchedBuffer(path);
+    const prefetched = await takePrefetchedBuffer(path, resolved, cache, progressListener);
     if (prefetched) {
-        progressListener({
-            total: prefetched.byteLength,
-            current: prefetched.byteLength,
-            part: new Uint8Array(0),
-        });
         return prefetched;
     }
 
