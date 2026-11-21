@@ -8,6 +8,8 @@
 const params = new URLSearchParams(window.location.search);
 
 export const EMBED = params.get("embed") === "1";
+// ?client=1 opens the embedded client-style dashboard view without forcing ?embed=1 tiling/chrome rules.
+export const CLIENT = params.get("client") === "1";
 // ?flight=0 restores the old instant jump (kept to measure against).
 export const FLIGHT = params.get("flight") !== "0";
 // ?cache=0 drops the recently-visited square cache (the old behaviour), to measure against.
@@ -28,6 +30,17 @@ export const MAIN_MARK = "⟦MAIN⟧";
 // a 2:1 frame without the horizon taking the top half.
 export const EMBED_FOLLOW_DISTANCE = 20;
 export const EMBED_FOLLOW_PITCH = -290;
+
+// Client dashboard camera (?client=1): tighter 7-tile follow orbit (when not ?embed=1), -245 pitch, 55-deg FOV.
+export const CLIENT_FOLLOW_DISTANCE = 7;
+export const CLIENT_FOLLOW_PITCH = -245;
+export const DEFAULT_FOV = CLIENT ? 55 : 90;
+
+export function notifyCameraReleased(): void {
+    if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("atlasCameraReleased"));
+    }
+}
 
 const hidden = new Set<string>(
     (params.get("hideNames") ?? "")

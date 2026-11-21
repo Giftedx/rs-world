@@ -235,6 +235,7 @@ export class MultiView {
     private chrome = true;
     private moveStart = 0;
     private lastStatusAt = 0;
+    private lastStatusKey = "";
     private canvas?: HTMLCanvasElement;
     private downX = 0;
     private downY = 0;
@@ -353,6 +354,7 @@ export class MultiView {
         if (pane.enter) {
             // Never drawn: nothing to fade.
             pane.frame.remove();
+            pane.overlay.dispose();
             this.onRetired?.(pane);
         } else {
             this.leaving.push(pane);
@@ -424,6 +426,7 @@ export class MultiView {
     private dropLeaving(): void {
         for (const pane of this.leaving.splice(0)) {
             pane.frame.remove();
+            pane.overlay.dispose();
             this.onRetired?.(pane);
         }
     }
@@ -452,8 +455,12 @@ export class MultiView {
         this.stopped = true;
         for (const pane of this.panes) {
             pane.live.stop();
+            pane.overlay.dispose();
+            pane.farLabels.length = 0;
         }
         this.panes = [];
+        this.drawList.length = 0;
+        this.lastStatusKey = "";
         this.detach();
     }
 
@@ -635,17 +642,14 @@ export class MultiView {
         );
     }
 
-    // Twice a second: the panes' labels, and which asked names are on screen or not online. A
-    // hidden name is never printed (paneLabel) and goes into the status as the marker.
+    // Updates pane labels and status; posts immediately whenever status changes, otherwise
+    // rate-limits repeated identical snapshots to twice a second.
     updateStatus(
         getGroundY: (e: LiveEntity) => number | undefined,
         force?: boolean,
+        canShow?: (e: LiveEntity, pane: MultiPane) => boolean,
     ): MultiStatus | undefined {
         const now = performance.now();
-        if (!force && now - this.lastStatusAt < 500) {
-            return undefined;
-        }
-        this.lastStatusAt = now;
         const status: MultiStatus = { names: [], shown: [], offline: [] };
         for (const pane of this.panes) {
             const asked = pane.getAsked();
@@ -655,7 +659,13 @@ export class MultiView {
 
             let state: PaneState = "";
             if (asked) {
-                if (followed && getGroundY(followed) !== undefined) {
+                const renderReady = followed
+                    ? getGroundY(followed) !== undefined &&
+                      (!canShow || canShow(followed, pane)) &&
+                      pane.rect.w > 0 &&
+                      pane.rect.h > 0
+                    : false;
+                if (renderReady) {
                     state = "shown";
                 } else if (name && !followed && pane.live.world.rosterTick !== -1) {
                     const key = name.toLowerCase();
@@ -663,11 +673,11 @@ export class MultiView {
                         (r) => r[1].toLowerCase() === key,
                     );
                     state = online ? "finding" : "offline";
-                    // A follow of a player who is not online is dropped. An embedding page cannot ask
-                    // again by hand, so the pane takes the player up when they log in.
+                    // Recover follow for chromeless/embedded multi-view (including ?client=1 Wall)
+                    // once a previously missing player enters the roster.
                     if (
                         online &&
-                        this.embedded &&
+                        (this.embedded || !this.chrome) &&
                         !pane.live.followName &&
                         !pane.live.pendingFollow
                     ) {
@@ -709,6 +719,12 @@ export class MultiView {
                 pane.statusText.textContent = text;
             }
         }
+        const statusKey = `${status.names.join(",")}|${status.shown.join(",")}|${status.offline.join(",")}`;
+        if (!force && statusKey === this.lastStatusKey && now - this.lastStatusAt < 500) {
+            return undefined;
+        }
+        this.lastStatusAt = now;
+        this.lastStatusKey = statusKey;
         return status;
     }
 }

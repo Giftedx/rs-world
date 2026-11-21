@@ -3,10 +3,24 @@ import xxhash, { XXHashAPI } from "xxhash-wasm";
 
 export class Hasher {
     static hashApi: XXHashAPI | undefined;
+    private static initPromise?: Promise<XXHashAPI>;
 
-    static async init(): Promise<XXHashAPI> {
-        Hasher.hashApi = await xxhash();
-        return Hasher.hashApi;
+    static init(): Promise<XXHashAPI> {
+        if (Hasher.hashApi) {
+            return Promise.resolve(Hasher.hashApi);
+        }
+        if (!Hasher.initPromise) {
+            Hasher.initPromise = xxhash()
+                .then((api) => {
+                    Hasher.hashApi = api;
+                    return api;
+                })
+                .catch((err) => {
+                    Hasher.initPromise = undefined;
+                    throw err;
+                });
+        }
+        return Hasher.initPromise;
     }
 
     static hash32Int(n: number): number {

@@ -10,7 +10,18 @@ import { LiveWorld } from "./LiveWorld";
 import { FeedStatus, WorldFeedClient } from "./WorldFeedClient";
 import { WorldState } from "./WorldState";
 import { FeedRoster, RosterPlayer } from "./protocol";
-import { EMBED, EMBED_FOLLOW_DISTANCE, EMBED_FOLLOW_PITCH, FLIGHT, postTiming, resolveFollow } from "./embed";
+import {
+    CLIENT,
+    CLIENT_FOLLOW_DISTANCE,
+    CLIENT_FOLLOW_PITCH,
+    EMBED,
+    EMBED_FOLLOW_DISTANCE,
+    EMBED_FOLLOW_PITCH,
+    FLIGHT,
+    notifyCameraReleased,
+    postTiming,
+    resolveFollow,
+} from "./embed";
 import { CameraFlight, MapAccess } from "./CameraFlight";
 
 // Tiles streamed around the camera; the engine caps a subscription at 384 x 384, which a radius
@@ -186,6 +197,7 @@ export class LiveController {
         camera: Camera,
         renderDistance: number,
         getGroundY: (e: LiveEntity) => number | undefined,
+        getTileGroundY?: (level: number, fineX: number, fineZ: number) => number | undefined,
     ): void {
         // Connect on the first rendered frame, so viewers that never render never connect.
         if (!this.started) {
@@ -197,22 +209,16 @@ export class LiveController {
             this.world.cycle();
         }
 
-        if (this.pendingFollow && this.world.rosterTick !== -1) {
-            // The embedding page may ask for the hidden main account by marker; wait for the hidden list.
-            const name = resolveFollow(this.pendingFollow);
-            if (name) {
-                this.pendingFollow = undefined;
-                this.goToPlayer(name, camera);
-            }
-        }
+        this.resolvePending(camera, getTileGroundY);
 
         if (this.flight) {
             if (this.flight.step(camera, this.maps)) {
                 this.flight = undefined;
-                this.orbitDistance = EMBED ? EMBED_FOLLOW_DISTANCE : FOLLOW_DISTANCE;
+                this.orbitDistance = defaultFollowDistance();
+                this.updateFollow(camera, getGroundY, getTileGroundY);
             }
         } else {
-            this.updateFollow(camera, getGroundY);
+            this.updateFollow(camera, getGroundY, getTileGroundY);
         }
         const tm = this.timing;
         if (tm && this.maps) {
@@ -228,15 +234,27 @@ export class LiveController {
             }
         }
 
+        if (!this.hasPlacedTarget()) {
+            return;
+        }
+
         // Seeing further than the engine will stream: the half behind the camera is mostly off
         // screen, so slide the area forward, up to half its size (less when looking down).
         const radius = clamp(renderDistance, MIN_AREA_RADIUS, this.maxAreaRadius);
-        const ahead =
-            clamp(renderDistance - MAX_AREA_RADIUS, 0, MAX_AREA_RADIUS / 2) *
-            Math.cos(camera.pitch * RS_TO_RADIANS);
-        const yaw = (camera.yaw - 1024) * RS_TO_RADIANS;
-        const centerX = camera.getPosX() - Math.sin(yaw) * ahead;
-        const centerZ = camera.getPosZ() - Math.cos(yaw) * ahead;
+        const followTarget = this.isFollowing() ? this.getTargetTile() : undefined;
+        let centerX: number;
+        let centerZ: number;
+        if (followTarget) {
+            centerX = followTarget[0];
+            centerZ = followTarget[1];
+        } else {
+            const ahead =
+                clamp(renderDistance - MAX_AREA_RADIUS, 0, MAX_AREA_RADIUS / 2) *
+                Math.cos(camera.pitch * RS_TO_RADIANS);
+            const yaw = (camera.yaw - 1024) * RS_TO_RADIANS;
+            centerX = camera.getPosX() - Math.sin(yaw) * ahead;
+            centerZ = camera.getPosZ() - Math.cos(yaw) * ahead;
+        }
         const x0 = Math.floor((centerX - radius) / AREA_GRID) * AREA_GRID;
         const z0 = Math.floor((centerZ - radius) / AREA_GRID) * AREA_GRID;
         const size = Math.ceil((radius * 2) / AREA_GRID) * AREA_GRID + AREA_GRID;
@@ -245,6 +263,43 @@ export class LiveController {
 
     isFollowing(): boolean {
         return this.followName !== undefined;
+    }
+
+    // False while waiting on the roster to place an initial ?follow / multi-pane target,
+    // so callers neither stream nor draw a stale template camera position.
+    hasPlacedTarget(): boolean {
+        return !(this.pendingFollow && !this.followName);
+    }
+
+    getTargetTile(): [number, number] | undefined {
+        const player = this.getFollowed();
+        if (player) {
+            return [player.x / 128, player.z / 128];
+        }
+        if (this.followName) {
+            const key = this.followName.toLowerCase();
+            const entry = this.world.rosterPlayers.find((p) => p[1].toLowerCase() === key);
+            if (entry) {
+                return [entry[2] + 0.5, entry[3] + 0.5];
+            }
+        }
+        return undefined;
+    }
+
+    resolvePending(
+        camera: Camera,
+        getTileGroundY?: (level: number, fineX: number, fineZ: number) => number | undefined,
+    ): boolean {
+        if (!this.pendingFollow || (this.world.rosterTick === -1 && this.world.players.size === 0)) {
+            return false;
+        }
+        // The embedding page may ask for the hidden main account by marker; wait for the hidden list.
+        const name = resolveFollow(this.pendingFollow);
+        if (!name || !this.goToPlayer(name, camera, getTileGroundY)) {
+            return false;
+        }
+        this.pendingFollow = undefined;
+        return true;
     }
 
     // Follow a visible player: the camera turns to face them from where it is.
@@ -256,38 +311,75 @@ export class LiveController {
     }
 
     // Fly to a player (they may be outside the streamed area, then the roster has them) and
-    // keep following them.
-    goToPlayer(name: string, camera: Camera): void {
+    // keep following them. Returns true once a position was found and the camera placed/flown.
+    goToPlayer(
+        name: string,
+        camera: Camera,
+        getTileGroundY?: (level: number, fineX: number, fineZ: number) => number | undefined,
+    ): boolean {
+        const key = name.toLowerCase();
         const visible = this.world.findPlayer(name);
-        const entry = this.world.rosterPlayers.find((p) => p[1].toLowerCase() === name.toLowerCase());
-        const target = visible ? { x: visible.x / 128, z: visible.z / 128 } : entry ? { x: entry[2] + 0.5, z: entry[3] + 0.5 } : undefined;
+        const entry = this.world.rosterPlayers.find((p) => p[1].toLowerCase() === key);
+        if (!visible && !entry) {
+            return false;
+        }
+        const tileX = visible ? visible.x / 128 : entry![2] + 0.5;
+        const tileZ = visible ? visible.z / 128 : entry![3] + 0.5;
+        const level = visible ? visible.level : entry![4];
+        const fineX = visible ? visible.x : entry![2] * 128 + 64;
+        const fineZ = visible ? visible.z : entry![3] * 128 + 64;
+        const groundY = getTileGroundY?.(level, fineX, fineZ);
+        const initialTargetY = ((groundY ?? -level * 240) - ORBIT_PIVOT_HEIGHT) / 128;
+
         // Already following someone else: fly there. From free camera fly too, once the scene has squares to
         // hold on screen; the first follow of an empty scene (page load) jumps straight in.
-        const fly = this.followName === undefined ? (this.maps?.visibleMapCount ?? 0) > 0 : this.followName.toLowerCase() !== name.toLowerCase();
-        if (target && FLIGHT && fly && this.flights) {
+        const fly = this.followName === undefined ? (this.maps?.visibleMapCount ?? 0) > 0 : this.followName.toLowerCase() !== key;
+        if (FLIGHT && fly && this.flights) {
             this.flight?.cancel();
-            this.flight = new CameraFlight(camera, target.x, target.z, EMBED ? EMBED_FOLLOW_DISTANCE : FOLLOW_DISTANCE, EMBED ? EMBED_FOLLOW_PITCH : FOLLOW_PITCH, this.canvas);
+            const resolveFlightTarget = () => {
+                const p = this.world.findPlayer(name);
+                const r = p ? undefined : this.world.rosterPlayers.find((item) => item[1].toLowerCase() === key);
+                if (!p && !r) {
+                    return undefined;
+                }
+                const tx = p ? p.x / 128 : r![2] + 0.5;
+                const tz = p ? p.z / 128 : r![3] + 0.5;
+                const lvl = p ? p.level : r![4];
+                const fx = p ? p.x : r![2] * 128 + 64;
+                const fz = p ? p.z : r![3] * 128 + 64;
+                const gy = getTileGroundY?.(lvl, fx, fz);
+                return {
+                    x: tx,
+                    y: ((gy ?? -lvl * 240) - ORBIT_PIVOT_HEIGHT) / 128,
+                    z: tz,
+                };
+            };
+            this.flight = new CameraFlight(
+                camera,
+                tileX,
+                tileZ,
+                defaultFollowDistance(),
+                defaultFollowPitch(),
+                this.canvas,
+                initialTargetY,
+                resolveFlightTarget,
+            );
             this.timing = { mode: "flight", start: performance.now(), tiles: this.flight.distance, frames: 0, blankFrames: 0, holdFrames: 0 };
             this.followName = name;
-            this.followSlot = -1;
+            this.followSlot = visible ? visible.id : -1;
             this.lastRosterJumpTick = this.world.rosterTick;
             this.version++;
-            return;
+            return true;
         }
-        if (target && this.followName !== undefined && this.flights) {
-            this.timing = { mode: "snap", start: performance.now(), tiles: Math.hypot(target.x - camera.getPosX(), target.z - camera.getPosZ()), frames: 0, blankFrames: 0, holdFrames: 0 };
+        if (this.followName !== undefined && this.flights) {
+            this.timing = { mode: "snap", start: performance.now(), tiles: Math.hypot(tileX - camera.getPosX(), tileZ - camera.getPosZ()), frames: 0, blankFrames: 0, holdFrames: 0 };
         }
-        if (visible) {
-            this.flyTo(camera, visible.x / 128, visible.z / 128);
-        } else if (entry) {
-            this.flyTo(camera, entry[2] + 0.5, entry[3] + 0.5);
-        } else {
-            return;
-        }
+        this.flyTo(camera, tileX, tileZ, level, groundY);
         this.followName = name;
-        this.followSlot = -1;
+        this.followSlot = visible ? visible.id : -1;
         this.lastRosterJumpTick = this.world.rosterTick;
         this.version++;
+        return true;
     }
 
     // Online players matching the panel's search, by name.
@@ -326,15 +418,24 @@ export class LiveController {
         this.goToPlayer(next[1], camera);
     }
 
-    unfollow(): void {
+    unfollow(byUser: boolean = false): void {
         this.flight?.cancel();
         this.flight = undefined;
-        if (this.followName === undefined) {
+        const wasFollowing = this.followName !== undefined || (byUser && this.pendingFollow !== undefined);
+        if (byUser) {
+            this.pendingFollow = undefined;
+        }
+        if (!wasFollowing) {
             return;
         }
         this.followSlot = -1;
         this.followName = undefined;
+        this.lastRosterJumpTick = -1;
+        this.orbitDistance = 0;
         this.version++;
+        if (byUser) {
+            notifyCameraReleased();
+        }
     }
 
     // Mouse wheel while following: zoom the orbit in or out.
@@ -370,17 +471,21 @@ export class LiveController {
     }
 
     // Puts the orbit's default view on a tile, so the area streams in before the player is found.
-    private flyTo(camera: Camera, tileX: number, tileZ: number): void {
-        const distance = EMBED ? EMBED_FOLLOW_DISTANCE : FOLLOW_DISTANCE;
-        const pitch = EMBED ? EMBED_FOLLOW_PITCH : FOLLOW_PITCH;
+    private flyTo(camera: Camera, tileX: number, tileZ: number, level: number = 0, groundY?: number): void {
+        const distance = defaultFollowDistance();
+        const pitch = defaultFollowPitch();
         camera.yaw = FOLLOW_YAW;
         camera.pitch = pitch;
         this.orbitDistance = distance;
-        placeOrbitCamera(camera, tileX, camera.getPosY(), tileZ, distance);
-        camera.pos[1] = -distance * Math.sin(-pitch * RS_TO_RADIANS);
+        const targetY = ((groundY ?? -level * 240) - ORBIT_PIVOT_HEIGHT) / 128;
+        placeOrbitCamera(camera, tileX, targetY, tileZ, distance);
     }
 
-    private updateFollow(camera: Camera, getGroundY: (e: LiveEntity) => number | undefined): void {
+    private updateFollow(
+        camera: Camera,
+        getGroundY: (e: LiveEntity) => number | undefined,
+        getTileGroundY?: (level: number, fineX: number, fineZ: number) => number | undefined,
+    ): void {
         if (!this.followName) {
             return;
         }
@@ -399,30 +504,44 @@ export class LiveController {
             }
         }
         if (!player) {
+            const name = this.followName.toLowerCase();
+            const entry = this.world.rosterPlayers.find((p) => p[1].toLowerCase() === name);
+            if (!entry) {
+                return;
+            }
+            const tileX = entry[2] + 0.5;
+            const tileZ = entry[3] + 0.5;
+            const level = entry[4];
+            const tileGroundY = getTileGroundY?.(level, entry[2] * 128 + 64, entry[3] * 128 + 64);
             // Not streamed here (teleported, or we haven't arrived): jump to where the roster has
             // them, at most once per roster update.
-            if (this.world.rosterTick !== this.lastRosterJumpTick) {
+            if (
+                this.world.rosterTick !== this.lastRosterJumpTick &&
+                (Math.abs(tileX - camera.getPosX()) > 32 || Math.abs(tileZ - camera.getPosZ()) > 32)
+            ) {
                 this.lastRosterJumpTick = this.world.rosterTick;
-                const name = this.followName.toLowerCase();
-                const entry = this.world.rosterPlayers.find((p) => p[1].toLowerCase() === name);
-                if (
-                    entry &&
-                    (Math.abs(entry[2] + 0.5 - camera.getPosX()) > 32 ||
-                        Math.abs(entry[3] + 0.5 - camera.getPosZ()) > 32)
-                ) {
-                    this.flyTo(camera, entry[2] + 0.5, entry[3] + 0.5);
-                }
+                this.flyTo(camera, tileX, tileZ, level, tileGroundY);
+                return;
+            }
+            this.lastRosterJumpTick = this.world.rosterTick;
+            // Refine height once the destination square's heightmap is available so the camera sits above
+            // elevated rooms/hills while the entity stream catches up.
+            if (this.orbitDistance > 0 && tileGroundY !== undefined) {
+                const targetY = (tileGroundY - ORBIT_PIVOT_HEIGHT) / 128;
+                camera.pitch = clamp(camera.pitch, MIN_ORBIT_PITCH, MAX_ORBIT_PITCH);
+                placeOrbitCamera(camera, tileX, targetY, tileZ, this.orbitDistance);
             }
             return;
         }
 
         const groundY = getGroundY(player);
-        if (groundY === undefined) {
-            // Terrain under them hasn't loaded yet; hold the camera.
+        if (groundY === undefined && this.orbitDistance === 0 && !EMBED && !CLIENT) {
+            // Standalone aim-from-current-camera waits for ground height so pitch angle doesn't snap.
             return;
         }
+        const resolvedGroundY = groundY ?? -player.level * 240;
         const targetX = player.x / 128;
-        const targetY = (groundY - ORBIT_PIVOT_HEIGHT) / 128;
+        const targetY = (resolvedGroundY - ORBIT_PIVOT_HEIGHT) / 128;
         const targetZ = player.z / 128;
 
         if (this.orbitDistance === 0) {
@@ -436,10 +555,10 @@ export class LiveController {
             camera.pitch = Math.round(
                 Math.asin(clamp(-dy / Math.max(distance, 0.001), -1, 1)) / RS_TO_RADIANS,
             );
-            if (EMBED) {
+            if (EMBED || CLIENT) {
                 // Same framing for every followed bot, wherever the camera came from.
-                this.orbitDistance = EMBED_FOLLOW_DISTANCE;
-                camera.pitch = EMBED_FOLLOW_PITCH;
+                this.orbitDistance = defaultFollowDistance();
+                camera.pitch = defaultFollowPitch();
             }
         }
 
@@ -462,6 +581,14 @@ function placeOrbitCamera(camera: Camera, x: number, y: number, z: number, dista
 
 function clamp(value: number, min: number, max: number): number {
     return Math.min(Math.max(value, min), max);
+}
+
+function defaultFollowDistance(): number {
+    return EMBED ? EMBED_FOLLOW_DISTANCE : CLIENT ? CLIENT_FOLLOW_DISTANCE : FOLLOW_DISTANCE;
+}
+
+function defaultFollowPitch(): number {
+    return EMBED ? EMBED_FOLLOW_PITCH : CLIENT ? CLIENT_FOLLOW_PITCH : FOLLOW_PITCH;
 }
 
 export function getDefaultFeedUrl(): string | undefined {

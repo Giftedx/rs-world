@@ -12,7 +12,7 @@ describe("markers", () => {
             ],
             pies: [{ x: 3059, z: 3884, l: 0, p: 0.25 }, { x: 3059, z: 3884, l: 0, p: 2 }],
             lines: [{ x0: 3008, z0: 3520, x1: 3392, z1: 3520, l: 0, colour: "#ff0000", label: "Wilderness 1" }],
-            players: { goondelf: "#00ffff", "Bad Name!": "#ffffff", ours: "#00ff00" },
+            players: { goondelf: "#00ffff", MixedCase: "#ff00ff", "Bad Name!": "#ffffff", ours: "#00ff00" },
             npcs: [{ types: [1, 2, -5], nids: [77], colour: "#00ffff" }, { types: [3] }],
             ground: { prices: { "Rune scimitar": 15000, Bad: -1 }, min: 1000 },
         });
@@ -20,6 +20,7 @@ describe("markers", () => {
         expect(m.pies).toEqual([{ x: 3059, z: 3884, l: 0, p: 0.25 }]);
         expect(m.lines.length).toBe(1);
         expect(m.playerColour("Goondelf")).toBe("#00ffff");
+        expect(m.playerColour("mixedcase")).toBe("#ff00ff");
         expect(m.playerColour("Bad Name!")).toBeUndefined();
         expect(m.npcColour(77, 999)).toBe("#00ffff");
         expect(m.npcColour(5, 2)).toBe("#00ffff");
@@ -54,5 +55,8 @@ describe("clipSegment", () => {
         expect(clipSegment(3008, 3520, 3392, 3520, 2946, 3446, 3074, 3574)).toEqual([3008, 3520, 3074, 3520]);
         expect(clipSegment(3000, 3600, 3000, 3700, 2946, 3446, 3074, 3574)).toBeNull();
         expect(clipSegment(0, 0, 10, 10, 2, 2, 4, 4)).toEqual([2, 2, 4, 4]);
+        const out: [number, number, number, number] = [0, 0, 0, 0];
+        expect(clipSegment(0, 0, 10, 10, 2, 2, 4, 4, out)).toBe(out);
+        expect(out).toEqual([2, 2, 4, 4]);
     });
 });

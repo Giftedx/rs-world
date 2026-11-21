@@ -725,6 +725,9 @@ export class WorldState {
         height: number,
         delay: number,
     ): void {
+        if (this.mapAnims.length >= 512) {
+            this.mapAnims.shift();
+        }
         this.mapAnims.push(
             new MapAnim(
                 spotAnim,
@@ -739,6 +742,9 @@ export class WorldState {
     }
 
     private addProjectile(world: LiveWorld, r: Extract<ZoneRecord, { e: "pj" }>): void {
+        if (this.projectiles.length >= 512) {
+            this.projectiles.shift();
+        }
         this.projectiles.push(
             new Projectile(
                 r.id,

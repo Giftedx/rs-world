@@ -128,12 +128,20 @@ export class LiveEntityRenderer {
 
     items: RenderItem[] = [];
     farLabels: FarPlayerLabel[] = [];
+    private farLabelPool: FarPlayerLabel[] = [];
+    private farLabelUsed: number = 0;
     // Last pose drawn per entity, held while a new appearance or anim is still baking.
     lastDrawn: WeakMap<LiveEntity, { page: EntityAnimPage; frame: number }> = new WeakMap();
     // Draw order: items grouped by page, plus where each page's run starts in the data texture.
     pageRuns: { page: EntityAnimPage; start: number; count: number }[] = [];
+    private runPool: { page: EntityAnimPage; start: number; count: number }[] = [];
+    private byPage: Map<EntityAnimPage, RenderItem[]> = new Map();
+    private pageListPool: RenderItem[][] = [];
+    private rangeScratch: number[][] = [];
     data: Int32Array = new Int32Array(16 * 4);
     dataTexture?: Texture;
+    private dataTextureRows: number = 0;
+    private deleted: boolean = false;
 
     showPlayers: boolean = true;
     showNpcs: boolean = true;
@@ -191,7 +199,9 @@ export class LiveEntityRenderer {
 
     prepare(maxLevel: number, camera: Camera, renderDistance: number): void {
         this.items.length = 0;
+        this.itemPoolUsed = 0;
         this.farLabels.length = 0;
+        this.farLabelUsed = 0;
         this.now = performance.now();
         this.cameraX = camera.getPosX();
         this.cameraY = camera.getPosY();
@@ -234,7 +244,6 @@ export class LiveEntityRenderer {
             this.addFarPlayers(maxLevel, renderDistance);
         }
 
-        this.itemPoolUsed = 0;
         if (this.worldState) {
             this.addWorldState(this.worldState, maxLevel, renderDistance);
         }
@@ -313,21 +322,26 @@ export class LiveEntityRenderer {
         }
         if (page) {
             frame = Math.min(Math.max(frame, 0), page.frames.length - 1);
-            page.lastUsedAt = this.now;
-            this.lastDrawn.set(e, { page, frame });
+            const prev = this.lastDrawn.get(e);
+            if (!prev) {
+                this.lastDrawn.set(e, { page, frame });
+            } else {
+                prev.page = page;
+                prev.frame = frame;
+            }
             e.height = page.frameHeights[frame] || e.height;
-            this.items.push({
+            this.pushItem(
                 page,
                 frame,
-                x: e.x,
-                y: ground.y,
-                z: e.z,
-                yaw: e.yaw,
-                plane: ground.plane,
-                interactId: e.id,
+                e.x,
+                ground.y,
+                e.z,
+                e.yaw,
+                0,
+                ground.plane,
+                e.id,
                 interactType,
-                pitch: 0,
-            });
+            );
         }
 
         if (e.spotanimId !== -1 && e.spotanimFrame >= 0) {
@@ -340,19 +354,18 @@ export class LiveEntityRenderer {
                     spotSeq,
                 );
                 if (page) {
-                    page.lastUsedAt = this.now;
-                    this.items.push({
+                    this.pushItem(
                         page,
-                        frame: Math.min(e.spotanimFrame, page.frames.length - 1),
-                        x: e.x,
-                        y: ground.y - e.spotanimHeight,
-                        z: e.z,
-                        yaw: e.yaw,
-                        plane: ground.plane,
-                        interactId: e.id,
+                        e.spotanimFrame,
+                        e.x,
+                        ground.y - e.spotanimHeight,
+                        e.z,
+                        e.yaw,
+                        0,
+                        ground.plane,
+                        e.id,
                         interactType,
-                        pitch: 0,
-                    });
+                    );
                 }
             }
         }
@@ -690,26 +703,31 @@ export class LiveEntityRenderer {
             }
             const page = far.isMoving(p, t) ? walk : idle;
             const frame = (Math.floor(loopCycle / FAR_FRAME_CYCLES) + p.slot) % page.frames.length;
-            page.lastUsedAt = this.now;
-            this.items.push({
+            this.pushItem(
                 page,
                 frame,
                 x,
-                y: ground.y,
+                ground.y,
                 z,
-                yaw: p.yaw,
-                plane: ground.plane,
-                interactId: p.slot,
-                interactType: InteractType.LIVE_PLAYER,
-                pitch: 0,
-            });
-            this.farLabels.push({
-                name: p.name,
-                x,
-                z,
-                groundY: ground.y,
-                height: page.frameHeights[frame],
-            });
+                p.yaw,
+                0,
+                ground.plane,
+                p.slot,
+                InteractType.LIVE_PLAYER,
+            );
+            let label = this.farLabelPool[this.farLabelUsed];
+            if (!label) {
+                label = { name: p.name, x, z, groundY: ground.y, height: page.frameHeights[frame] };
+                this.farLabelPool.push(label);
+            } else {
+                label.name = p.name;
+                label.x = x;
+                label.z = z;
+                label.groundY = ground.y;
+                label.height = page.frameHeights[frame];
+            }
+            this.farLabelUsed++;
+            this.farLabels.push(label);
         }
     }
 
@@ -775,7 +793,7 @@ export class LiveEntityRenderer {
         this.workerPool
             .queueEntityAnim({ key, spec, seqId })
             .then((data) => {
-                if (this.pages.get(key) !== "loading") {
+                if (this.deleted || this.pages.get(key) !== "loading") {
                     return;
                 }
                 if (!data || data.indices.length === 0) {
@@ -785,6 +803,9 @@ export class LiveEntityRenderer {
                 this.pages.set(key, this.createPage(data));
             })
             .catch((e) => {
+                if (this.deleted) {
+                    return;
+                }
                 console.error("Failed baking live entity", key, e);
                 this.pages.set(key, "failed");
             })
@@ -825,32 +846,55 @@ export class LiveEntityRenderer {
     }
 
     private buildRuns(): void {
-        const byPage = new Map<EntityAnimPage, RenderItem[]>();
-        for (const item of this.items) {
-            const list = byPage.get(item.page);
-            if (list) {
-                list.push(item);
-            } else {
-                byPage.set(item.page, [item]);
+        const byPage = this.byPage;
+        for (const list of byPage.values()) {
+            list.length = 0;
+            this.pageListPool.push(list);
+        }
+        byPage.clear();
+
+        for (let i = 0; i < this.items.length; i++) {
+            const item = this.items[i];
+            let list = byPage.get(item.page);
+            if (!list) {
+                list = this.pageListPool.pop() ?? [];
+                byPage.set(item.page, list);
             }
+            list.push(item);
         }
 
         this.pageRuns.length = 0;
         this.items.length = 0;
+        let runIdx = 0;
         for (const [page, list] of byPage) {
-            this.pageRuns.push({ page, start: this.items.length, count: list.length });
-            for (const item of list) {
-                this.items.push(item);
+            let run = this.runPool[runIdx];
+            if (!run) {
+                run = { page, start: 0, count: 0 };
+                this.runPool.push(run);
+            }
+            run.page = page;
+            run.start = this.items.length;
+            run.count = list.length;
+            runIdx++;
+            this.pageRuns.push(run);
+            for (let i = 0; i < list.length; i++) {
+                this.items.push(list[i]);
             }
         }
     }
 
     private uploadData(): void {
         const count = this.items.length;
+        if (count === 0 && this.dataTexture) {
+            return;
+        }
         const texels = Math.max(count * 2, 1);
-        const rows = Math.ceil(texels / 16);
-        if (this.data.length < rows * 16 * 4) {
-            this.data = new Int32Array(Math.ceil(rows * 1.5) * 16 * 4);
+        const neededRows = Math.ceil(texels / 16);
+        const grow = !this.dataTexture || neededRows > this.dataTextureRows;
+        const rows = grow ? Math.max(neededRows, Math.max(16, Math.ceil(this.dataTextureRows * 1.5))) : this.dataTextureRows;
+        const totalInts = rows * 16 * 4;
+        if (this.data.length < totalInts) {
+            this.data = new Int32Array(totalInts);
         }
         const data = this.data;
         for (let i = 0; i < count; i++) {
@@ -866,12 +910,18 @@ export class LiveEntityRenderer {
             data[offset + 7] = 0;
         }
 
-        this.dataTexture?.delete();
-        this.dataTexture = this.app.createTexture2D(data.subarray(0, rows * 16 * 4), 16, rows, {
-            internalFormat: PicoGL.RGBA32I,
-            minFilter: PicoGL.NEAREST,
-            magFilter: PicoGL.NEAREST,
-        });
+        const view = data.subarray(0, totalInts);
+        if (grow) {
+            this.dataTexture?.delete();
+            this.dataTextureRows = rows;
+            this.dataTexture = this.app.createTexture2D(view, 16, rows, {
+                internalFormat: PicoGL.RGBA32I,
+                minFilter: PicoGL.NEAREST,
+                magFilter: PicoGL.NEAREST,
+            });
+        } else {
+            this.dataTexture!.data(view);
+        }
     }
 
     render(
@@ -880,26 +930,52 @@ export class LiveEntityRenderer {
         textureMaterials: Texture,
         draw: DrawFunction,
     ): void {
-        if (!this.dataTexture) {
+        if (!this.dataTexture || this.pageRuns.length === 0) {
             return;
         }
-        for (const run of this.pageRuns) {
+        const ranges = this.rangeScratch;
+        for (let r = 0; r < this.pageRuns.length; r++) {
+            const run = this.pageRuns[r];
             const frames = transparent ? run.page.framesAlpha : run.page.frames;
             if (!frames) {
                 continue;
             }
-            const ranges: number[][] = [];
-            for (let i = 0; i < run.count; i++) {
-                ranges.push(frames[this.items[run.start + i].frame]);
+            const drawCall = run.page.drawCall;
+            const rawCall = drawCall as unknown as {
+                offsets: Int32Array;
+                numElements: Int32Array;
+                numInstances: Int32Array;
+                numDraws: number;
+                drawCountsFromVertexArray: boolean;
+            };
+            const count = run.count;
+            if (rawCall.offsets.length < count) {
+                rawCall.offsets = new Int32Array(count);
             }
-            const drawCall = run.page.drawCall
+            if (rawCall.numElements.length < count) {
+                rawCall.numElements = new Int32Array(count);
+            }
+            if (rawCall.numInstances.length < count) {
+                rawCall.numInstances = new Int32Array(count);
+            }
+            rawCall.numDraws = count;
+            rawCall.drawCountsFromVertexArray = false;
+            ranges.length = count;
+            for (let i = 0; i < count; i++) {
+                const frame = frames[this.items[run.start + i].frame];
+                ranges[i] = frame;
+                rawCall.offsets[i] = frame[0];
+                rawCall.numElements[i] = frame[1];
+                rawCall.numInstances[i] = frame[2] || 1;
+            }
+            drawCall
                 .uniform("u_entityDataOffset", run.start)
                 .texture("u_entityData", this.dataTexture)
                 .texture("u_textures", textureArray)
-                .texture("u_textureMaterials", textureMaterials)
-                .drawRanges(...ranges);
+                .texture("u_textureMaterials", textureMaterials);
             draw(drawCall, ranges);
         }
+        ranges.length = 0;
     }
 
     private evictPages(): void {
@@ -935,6 +1011,7 @@ export class LiveEntityRenderer {
     }
 
     delete(): void {
+        this.deleted = true;
         for (const page of this.pages.values()) {
             if (page instanceof EntityAnimPage) {
                 page.delete();
@@ -944,6 +1021,21 @@ export class LiveEntityRenderer {
         this.pageBytes = 0;
         this.dataTexture?.delete();
         this.dataTexture = undefined;
+        this.dataTextureRows = 0;
+        this.items.length = 0;
+        this.itemPool.length = 0;
+        this.farLabels.length = 0;
+        this.farLabelPool.length = 0;
+        this.pageRuns.length = 0;
+        this.runPool.length = 0;
+        this.byPage.clear();
+        this.pageListPool.length = 0;
+        this.rangeScratch.length = 0;
+        this.objDraws.length = 0;
+        this.objPageKeys.clear();
+        this.locPageKeys.clear();
+        this.spotPageKeys.clear();
+        this.order.length = 0;
     }
 }
 

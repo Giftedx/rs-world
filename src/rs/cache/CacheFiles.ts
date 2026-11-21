@@ -99,7 +99,7 @@ export class CacheFiles {
         const indexFilePromises: Promise<CachedFile>[] = [];
         for (let i = 0; i < CacheFiles.DAT_INDEX_COUNT; i++) {
             indexFilePromises.push(
-                fetchCachedFile(baseUrl, CacheFiles.INDEX_FILE_PREFIX + i, shared, false, cache),
+                fetchCachedFile(baseUrl, CacheFiles.INDEX_FILE_PREFIX + i, shared, false, cache, signal),
             );
         }
 
@@ -138,6 +138,7 @@ export class CacheFiles {
             shared,
             false,
             cache,
+            signal,
         );
         const indexCount = metaFile.data.byteLength / SectorCluster.SIZE;
 
@@ -152,6 +153,7 @@ export class CacheFiles {
                 shared,
                 false,
                 cache,
+                signal,
             ).catch(console.error),
         );
 
@@ -245,24 +247,169 @@ type CachedFile = {
     data: ArrayBuffer;
 };
 
-async function fetchCachedFile(
-    baseUrl: string,
-    name: string,
-    shared: boolean,
+type AtlasCachePrefetch = {
+    ready?: Promise<unknown>;
+    files?: Map<string, Promise<boolean | ArrayBuffer | undefined>>;
+};
+
+type InFlightEntry = {
+    controller: AbortController;
+    waiters: number;
+    listeners: Set<ProgressListener>;
+    promise: Promise<ArrayBuffer>;
+};
+
+const inFlightDownloads = new Map<string, InFlightEntry>();
+
+function resolvePrefetchPath(path: string): string {
+    try {
+        const base =
+            typeof document !== "undefined"
+                ? document.baseURI
+                : typeof globalThis.location !== "undefined"
+                  ? globalThis.location.href
+                  : "http://localhost/";
+        return new URL(path, base).pathname;
+    } catch {
+        return path;
+    }
+}
+
+function createAbortError(): Error {
+    return typeof DOMException !== "undefined"
+        ? new DOMException("Aborted", "AbortError")
+        : new Error("Aborted");
+}
+
+function toTargetBuffer(raw: ArrayBuffer, shared: boolean): ArrayBuffer {
+    if (shared) {
+        if (typeof SharedArrayBuffer !== "undefined" && raw instanceof SharedArrayBuffer) {
+            return raw;
+        }
+        const sab = new SharedArrayBuffer(raw.byteLength);
+        new Uint8Array(sab).set(new Uint8Array(raw));
+        return sab;
+    }
+    if (typeof SharedArrayBuffer !== "undefined" && raw instanceof SharedArrayBuffer) {
+        const ab = new ArrayBuffer(raw.byteLength);
+        new Uint8Array(ab).set(new Uint8Array(raw));
+        return ab;
+    }
+    return raw;
+}
+
+async function matchCached(
+    cache: Cache,
+    path: string,
+    resolved: string,
+): Promise<Response | undefined> {
+    const direct = await cache.match(path);
+    if (direct) {
+        return direct;
+    }
+    if (resolved !== path) {
+        return await cache.match(resolved);
+    }
+    return undefined;
+}
+
+async function takePrefetchedBuffer(
+    path: string,
+    resolved: string,
+    cache: Cache,
+    progressListener: ProgressListener,
+): Promise<ArrayBuffer | undefined> {
+    const holders: (AtlasCachePrefetch | undefined)[] = [];
+    holders.push((globalThis as { __atlasCachePrefetch?: AtlasCachePrefetch }).__atlasCachePrefetch);
+    try {
+        if (typeof window !== "undefined" && window.parent && window.parent !== window) {
+            holders.push(
+                (window.parent as { __atlasCachePrefetch?: AtlasCachePrefetch })
+                    .__atlasCachePrefetch,
+            );
+        }
+    } catch {
+        // Cross-origin frame: parent cannot expose __atlasCachePrefetch.
+    }
+    for (const holder of holders) {
+        if (!holder) {
+            continue;
+        }
+        try {
+            if (holder.ready) {
+                await holder.ready;
+            }
+            const filePromise = holder.files?.get(resolved) ?? holder.files?.get(path);
+            if (!filePromise) {
+                const raced = await matchCached(cache, path, resolved);
+                if (raced) {
+                    const parts = await toBufferParts(raced, 0, progressListener);
+                    return partsToBuffer(parts, false);
+                }
+                continue;
+            }
+            const result = await filePromise;
+            if (result instanceof ArrayBuffer && result.byteLength > 0) {
+                progressListener({
+                    total: result.byteLength,
+                    current: result.byteLength,
+                    part: new Uint8Array(0),
+                });
+                return result;
+            }
+            if (result) {
+                // Early prefetchers (shim.js / earlyCacheScript) store into Cache API then resolve true.
+                const cachedResp = await matchCached(cache, path, resolved);
+                if (cachedResp) {
+                    const parts = await toBufferParts(cachedResp, 0, progressListener);
+                    return partsToBuffer(parts, false);
+                }
+            }
+        } catch {
+            // Fall through to Cache API / network fetch on prefetch error.
+        }
+    }
+    return undefined;
+}
+
+function parseTotalFromContentRange(header: string | null): number | undefined {
+    if (!header) {
+        return undefined;
+    }
+    const slash = header.lastIndexOf("/");
+    if (slash === -1) {
+        return undefined;
+    }
+    const raw = header.slice(slash + 1).trim();
+    const total = Number(raw);
+    return Number.isFinite(total) && total >= 0 ? total : undefined;
+}
+
+async function deleteParts(cache: Cache, urls: RequestInfo[]): Promise<void> {
+    for (const url of urls) {
+        await cache.delete(url);
+    }
+}
+
+async function downloadCachedFile(
+    path: string,
     incremental: boolean,
     cache: Cache,
-    signal?: AbortSignal,
-    progressListener?: ProgressListener,
-): Promise<CachedFile> {
-    const path = baseUrl + name;
-    const cachedResp = await cache.match(path);
+    signal: AbortSignal,
+    progressListener: ProgressListener,
+): Promise<ArrayBuffer> {
+    const resolved = resolvePrefetchPath(path);
+    const cachedResp = await matchCached(cache, path, resolved);
     if (cachedResp) {
         const parts = await toBufferParts(cachedResp, 0, progressListener);
-        return {
-            name,
-            data: partsToBuffer(parts, shared),
-        };
+        return partsToBuffer(parts, false);
     }
+
+    const prefetched = await takePrefetchedBuffer(path, resolved, cache, progressListener);
+    if (prefetched) {
+        return prefetched;
+    }
+
     const partUrls: RequestInfo[] = [];
     const partBuffers: Uint8Array[][] = [];
     if (incremental) {
@@ -271,7 +418,7 @@ async function fetchCachedFile(
         });
         for (const partResp of partResponses) {
             const index = parseInt(partResp.headers.get("Cache-Part") || "0");
-            partUrls.push(path + "/part/?p=" + index);
+            partUrls.push(partResp.url || path + "/part/?p=" + index);
             partBuffers[index] = await toBufferParts(partResp, 0);
         }
     }
@@ -292,18 +439,60 @@ async function fetchCachedFile(
     }
 
     const headers: HeadersInit = {};
-
     if (offset > 0) {
         headers["Range"] = `bytes=${offset}-${Number.MAX_SAFE_INTEGER}`;
     }
 
-    const resp = await fetch(path, {
+    let resp = await fetch(path, {
         headers,
         signal,
     });
+
+    if (resp.status === 416 && offset > 0) {
+        const total = parseTotalFromContentRange(resp.headers.get("Content-Range"));
+        if (total === undefined || total === offset) {
+            // Cached incremental parts already cover the entire file.
+            const complete = partsToBuffer(parts, false);
+            await cache.put(
+                path,
+                new Response(ReadableBufferStream(complete), {
+                    status: 200,
+                    headers: {
+                        "Content-Type": "application/octet-stream",
+                        "Content-Length": complete.byteLength.toString(),
+                    },
+                }),
+            );
+            await deleteParts(cache, partUrls);
+            progressListener({
+                total: complete.byteLength,
+                current: complete.byteLength,
+                part: new Uint8Array(0),
+            });
+            return complete;
+        }
+        // Cached parts exceed/mismatch server file length; discard parts and re-fetch whole file cleanly.
+        await deleteParts(cache, partUrls);
+        partUrls.length = 0;
+        parts.length = 0;
+        partCount = 0;
+        offset = 0;
+        resp = await fetch(path, { signal });
+    }
+
     if (resp.status !== 200 && resp.status !== 206) {
         throw new Error("Failed downloading " + path + ", " + resp.status);
     }
+
+    if (resp.status === 200 && offset > 0) {
+        // Server ignored Range and returned the full payload from byte 0; drop partial prefix to avoid corruption.
+        await deleteParts(cache, partUrls);
+        partUrls.length = 0;
+        parts.length = 0;
+        partCount = 0;
+        offset = 0;
+    }
+
     const cacheUpdates: Promise<void>[] = [];
     let partCache: Uint8Array[] = [];
     let partCacheLength = 0;
@@ -338,16 +527,14 @@ async function fetchCachedFile(
                 partCacheLength = 0;
             }
         }
-        if (progressListener) {
-            progressListener(progress);
-        }
+        progressListener(progress);
     };
     const newParts = await toBufferParts(resp, offset, partProgressListener);
     for (const part of newParts) {
         parts.push(part);
     }
 
-    const buffer = partsToBuffer(parts, shared);
+    const buffer = partsToBuffer(parts, false);
 
     cache.put(
         path,
@@ -362,13 +549,116 @@ async function fetchCachedFile(
 
     if (incremental) {
         await Promise.all(cacheUpdates);
-        for (const url of partUrls) {
-            cache.delete(url);
-        }
+        await deleteParts(cache, partUrls);
     }
 
-    return {
-        name,
-        data: buffer,
-    };
+    return buffer;
+}
+
+async function fetchCachedFile(
+    baseUrl: string,
+    name: string,
+    shared: boolean,
+    incremental: boolean,
+    cache: Cache,
+    signal?: AbortSignal,
+    progressListener?: ProgressListener,
+): Promise<CachedFile> {
+    if (signal?.aborted) {
+        throw createAbortError();
+    }
+    const path = baseUrl + name;
+    let entry = inFlightDownloads.get(path);
+    if (!entry) {
+        const controller = new AbortController();
+        const listeners = new Set<ProgressListener>();
+        const created: InFlightEntry = {
+            controller,
+            waiters: 0,
+            listeners,
+            promise: downloadCachedFile(path, incremental, cache, controller.signal, (progress) => {
+                for (const listener of listeners) {
+                    listener(progress);
+                }
+            }).finally(() => {
+                if (inFlightDownloads.get(path) === created) {
+                    inFlightDownloads.delete(path);
+                }
+            }),
+        };
+        inFlightDownloads.set(path, created);
+        entry = created;
+    }
+
+    entry.waiters++;
+    if (progressListener) {
+        entry.listeners.add(progressListener);
+    }
+
+    let onAbort: (() => void) | undefined;
+    let settled = false;
+    try {
+        const raw = await new Promise<ArrayBuffer>((resolve, reject) => {
+            if (signal) {
+                onAbort = () => {
+                    if (settled) {
+                        return;
+                    }
+                    settled = true;
+                    if (progressListener) {
+                        entry!.listeners.delete(progressListener);
+                    }
+                    entry!.waiters = Math.max(0, entry!.waiters - 1);
+                    if (entry!.waiters === 0) {
+                        entry!.controller.abort();
+                        if (inFlightDownloads.get(path) === entry) {
+                            inFlightDownloads.delete(path);
+                        }
+                    }
+                    reject(createAbortError());
+                };
+                if (signal.aborted) {
+                    onAbort();
+                    return;
+                }
+                signal.addEventListener("abort", onAbort, { once: true });
+            }
+            entry!.promise.then(
+                (data) => {
+                    if (!settled) {
+                        settled = true;
+                        resolve(data);
+                    }
+                },
+                (err) => {
+                    if (!settled) {
+                        settled = true;
+                        reject(err);
+                    }
+                },
+            );
+        });
+        return {
+            name,
+            data: toTargetBuffer(raw, shared),
+        };
+    } finally {
+        if (signal && onAbort) {
+            signal.removeEventListener("abort", onAbort);
+        }
+        if (progressListener) {
+            entry.listeners.delete(progressListener);
+        }
+        if (!settled) {
+            entry.waiters = Math.max(0, entry.waiters - 1);
+            if (entry.waiters === 0) {
+                entry.controller.abort();
+                if (inFlightDownloads.get(path) === entry) {
+                    inFlightDownloads.delete(path);
+                }
+            }
+        } else if (!signal?.aborted) {
+            entry.waiters = Math.max(0, entry.waiters - 1);
+        }
+    }
 }

@@ -45,17 +45,19 @@ export class MarkerStore {
                 ? [{ x0: s.x0, z0: s.z0, x1: s.x1, z1: s.z1, l: s.l, colour: s.colour, label: label(s.label) }]
                 : [],
         );
-        this.players = new Map();
+        this.players.clear();
         if (o.players && typeof o.players === "object" && !Array.isArray(o.players)) {
             for (const [name, colour] of Object.entries(o.players as Record<string, unknown>).slice(0, 300)) {
-                if (/^[a-z0-9_ -]{1,12}$/.test(name) && typeof colour === "string" && COLOUR.test(colour)) this.players.set(name, colour);
+                if (/^[a-z0-9_ -]{1,12}$/i.test(name) && typeof colour === "string" && COLOUR.test(colour)) {
+                    this.players.set(name.toLowerCase(), colour);
+                }
             }
         }
         const ids = (v: unknown) => new Set(list(v, 200).filter((n): n is number => Number.isInteger(n) && (n as number) >= 0 && (n as number) < 65536));
         this.npcs = list(o.npcs, 20).flatMap((n: any) => (n && COLOUR.test(n.colour) ? [{ types: ids(n.types), nids: ids(n.nids), colour: n.colour }] : []));
         const g = o.ground && typeof o.ground === "object" ? (o.ground as Record<string, unknown>) : null;
         this.groundOn = !!g;
-        this.groundPrices = new Map();
+        this.groundPrices.clear();
         this.groundMin = 0;
         if (g) {
             if (g.prices && typeof g.prices === "object") {
@@ -93,20 +95,32 @@ export function shortValue(gp: number): string {
 
 // The part of the segment (x0, z0)-(x1, z1) inside the rectangle, or null (Liang-Barsky): a long ground line keeps the
 // part near the camera, though its middle is far away.
-export function clipSegment(x0: number, z0: number, x1: number, z1: number, minX: number, minZ: number, maxX: number, maxZ: number): [number, number, number, number] | null {
+export function clipSegment(
+    x0: number,
+    z0: number,
+    x1: number,
+    z1: number,
+    minX: number,
+    minZ: number,
+    maxX: number,
+    maxZ: number,
+    out?: [number, number, number, number],
+): [number, number, number, number] | null {
     const dx = x1 - x0;
     const dz = z1 - z0;
-    const p = [-dx, dx, -dz, dz];
-    const q = [x0 - minX, maxX - x0, z0 - minZ, maxZ - z0];
     let t0 = 0;
     let t1 = 1;
-    for (let i = 0; i < 4; i++) {
-        if (p[i] === 0) {
-            if (q[i] < 0) return null;
+
+    // Unrolled Liang-Barsky bounds checks to avoid per-call array allocations.
+    for (let edge = 0; edge < 4; edge++) {
+        const p = edge === 0 ? -dx : edge === 1 ? dx : edge === 2 ? -dz : dz;
+        const q = edge === 0 ? x0 - minX : edge === 1 ? maxX - x0 : edge === 2 ? z0 - minZ : maxZ - z0;
+        if (p === 0) {
+            if (q < 0) return null;
             continue;
         }
-        const r = q[i] / p[i];
-        if (p[i] < 0) {
+        const r = q / p;
+        if (p < 0) {
             if (r > t1) return null;
             if (r > t0) t0 = r;
         } else {
@@ -114,7 +128,15 @@ export function clipSegment(x0: number, z0: number, x1: number, z1: number, minX
             if (r < t1) t1 = r;
         }
     }
-    return t0 < t1 ? [x0 + t0 * dx, z0 + t0 * dz, x0 + t1 * dx, z0 + t1 * dz] : null;
+    if (t0 >= t1) return null;
+    if (out) {
+        out[0] = x0 + t0 * dx;
+        out[1] = z0 + t0 * dz;
+        out[2] = x0 + t1 * dx;
+        out[3] = z0 + t1 * dz;
+        return out;
+    }
+    return [x0 + t0 * dx, z0 + t0 * dz, x0 + t1 * dx, z0 + t1 * dz];
 }
 
 export const markers = new MarkerStore();

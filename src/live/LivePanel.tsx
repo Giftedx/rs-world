@@ -124,7 +124,7 @@ export function LivePanel({ mapViewer }: { mapViewer: MapViewer }): JSX.Element 
                         <div className="live-follow">
                             Following <span className="live-name">{followed}</span>
                             {!live.getFollowed() && <span className="live-dim"> (finding)</span>}
-                            <button className="live-button" onClick={() => live.unfollow()}>
+                            <button className="live-button" onClick={() => live.unfollow(true)}>
                                 Stop
                             </button>
                         </div>

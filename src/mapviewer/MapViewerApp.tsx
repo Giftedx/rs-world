@@ -4,6 +4,7 @@ import { registerSerializer } from "threads";
 import WebFont from "webfontloader";
 
 import { OsrsLoadingBar } from "../components/rs/loading/OsrsLoadingBar";
+import { getDefaultFeedUrl } from "../live/LiveController";
 import { DownloadProgress } from "../rs/cache/CacheFiles";
 import { formatBytes } from "../util/BytesUtil";
 import { isSharedMemorySupported, isTouchDevice, isWallpaperEngine } from "../util/DeviceUtil";
@@ -62,10 +63,20 @@ function MapViewerApp() {
             }
 
             const cacheInfo = cacheList.latest;
+            const liveParam = searchParams.get("live");
+            const liveEnabled =
+                liveParam !== null
+                    ? liveParam !== "off" && liveParam !== "0" && liveParam !== ""
+                    : Boolean(getDefaultFeedUrl());
+            const skipStaticNpcSpawns =
+                liveEnabled &&
+                cacheInfo.game !== "oldschool" &&
+                typeof cacheInfo.revision === "number" &&
+                cacheInfo.revision <= 474;
 
             const [cache, npcSpawns] = await Promise.all([
                 loadCacheFiles(cacheInfo, abortController.signal, setDownloadProgress),
-                fetchNpcSpawns(getNpcSpawnsUrl(cacheInfo)),
+                skipStaticNpcSpawns ? Promise.resolve([]) : fetchNpcSpawns(getNpcSpawnsUrl(cacheInfo)),
             ]);
 
             const mapImageCache = await caches.open("map-images");

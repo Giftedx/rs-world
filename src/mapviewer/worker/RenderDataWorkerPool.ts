@@ -4,11 +4,13 @@ import { WorkerDescriptor } from "threads/dist/master/pool-types";
 import { ObservablePromise } from "threads/dist/observable-promise";
 
 import { EntityAnimData, EntityAnimRequest } from "../../live/EntityModelLoader";
+import { Bzip2 } from "../../rs/compression/Bzip2";
+import { Gzip } from "../../rs/compression/Gzip";
 import { LoadedCache } from "../Caches";
 import { NpcSpawn } from "../data/npc/NpcSpawn";
 import { MinimapData } from "./MinimapData";
 import { RenderDataLoader } from "./RenderDataLoader";
-import { RenderDataWorker } from "./RenderDataWorker";
+import { RenderDataWorker, WorkerWasm } from "./RenderDataWorker";
 
 type RenderDataWorkerThread = ModuleThread<RenderDataWorker>;
 
@@ -31,8 +33,23 @@ export class RenderDataWorkerPool {
     ) {}
 
     initCache(cache: LoadedCache, npcSpawns: NpcSpawn[]): void {
+        const wasmReady: Promise<WorkerWasm | undefined> = Promise.all([
+            Bzip2.initWasm().catch(() => undefined),
+            Gzip.initWasm().catch(() => undefined),
+        ]).then(() =>
+            Bzip2.wasmModule || Gzip.wasmModule
+                ? { bz2: Bzip2.wasmModule, gzip: Gzip.wasmModule }
+                : undefined,
+        );
         for (const worker of this.workers) {
-            worker.init.then((w) => w.initCache(cache, npcSpawns));
+            Promise.all([worker.init, wasmReady]).then(async ([w, wasm]) => {
+                try {
+                    await w.initCache(cache, npcSpawns, wasm);
+                } catch {
+                    // Fall back without shared WebAssembly.Module if structured clone rejects it.
+                    await w.initCache(cache, npcSpawns);
+                }
+            });
         }
     }
 
