@@ -46,6 +46,7 @@ export class MarkerStore {
                 : [],
         );
         this.players.clear();
+        this.colourByName.clear();
         if (o.players && typeof o.players === "object" && !Array.isArray(o.players)) {
             for (const [name, colour] of Object.entries(o.players as Record<string, unknown>).slice(0, 300)) {
                 if (/^[a-z0-9_ -]{1,12}$/i.test(name) && typeof colour === "string" && COLOUR.test(colour)) {
@@ -69,8 +70,19 @@ export class MarkerStore {
         }
     }
 
+    // The overlays ask for every player on every frame: the answer for a name as the feed writes it is kept until the
+    // next overlay message, so a frame lowercases no name it has seen. Feed names are few (the players in the area).
+    private readonly colourByName: Map<string, string | null> = new Map();
+
     playerColour(name: string | undefined): string | undefined {
-        return name ? this.players.get(name.toLowerCase()) : undefined;
+        if (!name) return undefined;
+        let colour = this.colourByName.get(name);
+        if (colour === undefined) {
+            colour = this.players.get(name.toLowerCase()) ?? null;
+            if (this.colourByName.size >= 5000) this.colourByName.clear();
+            this.colourByName.set(name, colour);
+        }
+        return colour ?? undefined;
     }
 
     npcColour(nid: number, type: number): string | undefined {

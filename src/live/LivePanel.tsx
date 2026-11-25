@@ -24,7 +24,15 @@ function formatHost(url: string): string {
     }
 }
 
-export function LivePanel({ mapViewer }: { mapViewer: MapViewer }): JSX.Element | null {
+// listShown false: the panel is hidden (an embedding page hides it), so it skips the sorted list of every player online.
+// It still renders its buttons: the dashboard's bridge presses "Stop" to free the camera.
+export function LivePanel({
+    mapViewer,
+    listShown = true,
+}: {
+    mapViewer: MapViewer;
+    listShown?: boolean;
+}): JSX.Element | null {
     useLiveVersion(mapViewer);
     const live = mapViewer.live;
     const [search, setSearch] = useState(live?.playerFilter ?? "");
@@ -34,7 +42,7 @@ export function LivePanel({ mapViewer }: { mapViewer: MapViewer }): JSX.Element 
     const followedRef = useRef<HTMLDivElement>(null);
     const scrollToFollowed = useRef(false);
 
-    const players = live?.listPlayers() ?? [];
+    const players = listShown ? live?.listPlayers() ?? [] : [];
     const followed = live?.followName;
     const followedKey = followed?.toLowerCase();
     const followedIndex = players.findIndex((p) => p[1].toLowerCase() === followedKey);

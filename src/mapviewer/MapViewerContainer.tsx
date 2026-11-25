@@ -44,6 +44,32 @@ function LiveOverlayCanvas({ renderer }: { renderer: MapViewerRenderer }): JSX.E
     return <div ref={ref} className="live-overlay-container" />;
 }
 
+// The info panel and the live panel's player list render only while their box is displayed. An embedding page that
+// hides them (display: none, as the dashboard's client-viewer.css does) has no box to intersect, so the sorted list of
+// every player online is not rebuilt four times a second for nothing. The live panel itself stays: the dashboard's
+// bridge presses its "Stop" button to free the camera.
+function LiveHud({ mapViewer }: { mapViewer: MapViewer }): JSX.Element {
+    const ref = useRef<HTMLDivElement>(null);
+    const [shown, setShown] = useState(typeof IntersectionObserver === "undefined");
+    useEffect(() => {
+        const box = ref.current;
+        if (!box || typeof IntersectionObserver === "undefined") {
+            return;
+        }
+        const observer = new IntersectionObserver((entries) =>
+            setShown(entries[entries.length - 1].isIntersecting),
+        );
+        observer.observe(box);
+        return () => observer.disconnect();
+    }, []);
+    return (
+        <div className="live-hud" ref={ref}>
+            {shown && <InfoPanel />}
+            <LivePanel mapViewer={mapViewer} listShown={shown} />
+        </div>
+    );
+}
+
 export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.Element {
     const [searchParams, setSearchParams] = useSearchParams();
 
@@ -128,6 +154,8 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
     // most display frames draw nothing, and a state change on each of them re-rendered this tree for no new picture.
     const shownFrame = useRef(-1);
     const shownMenu = useRef("");
+    // The fps counter changes twice a second: each change re-renders this tree.
+    const fpsShownAt = useRef(0);
 
     const animate = (time: DOMHighResTimeStamp) => {
         // The address holds the camera and the followed name; an embedding page reads them from it. It is written
@@ -150,7 +178,10 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
             shownFrame.current = frame;
             if (!hideUi) {
                 setMultiView(!!mapViewer.multi);
-                setFps(Math.round(renderer.stats.frameTimeFps));
+                if (time - fpsShownAt.current >= 500) {
+                    fpsShownAt.current = time;
+                    setFps(Math.round(renderer.stats.frameTimeFps));
+                }
                 setCameraYaw(mapViewer.camera.getYaw());
             }
 
@@ -297,10 +328,7 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
                         <div className="fps-counter content-text">{fps}</div>
                         <div className="fps-counter content-text">{mapViewer.debugText}</div>
                     </div>
-                    <div className="live-hud">
-                        <InfoPanel />
-                        <LivePanel mapViewer={mapViewer} />
-                    </div>
+                    <LiveHud mapViewer={mapViewer} />
                     <WorldMapModal
                         isOpen={isWorldMapOpen}
                         onRequestClose={closeWorldMap}
