@@ -25,6 +25,7 @@ jest.mock("./worker/RenderDataLoader", () => ({ renderDataLoaderSerializer: {} }
 jest.mock("./worker/RenderDataWorkerPool", () => ({
     RenderDataWorkerPool: { create: jest.fn().mockReturnValue({}) },
 }));
+jest.mock("./worker/spawnRenderDataWorker", () => ({ spawnRenderDataWorker: jest.fn() }));
 jest.mock("./webgl/WebGLMapViewerRenderer", () => ({
     WebGLMapViewerRenderer: { isSupported: jest.fn() },
 }));

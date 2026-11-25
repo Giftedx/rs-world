@@ -237,6 +237,12 @@ export class LiveController {
         if (!this.hasPlacedTarget()) {
             return;
         }
+        // A flight holds the old view while the squares at the destination load (up to 6 s). The feed keeps the old
+        // area until the camera moves, so the held view keeps its players, doors, fires and ground items. The new area
+        // is asked for when the camera starts to move, 0.5 to 1.4 s before it arrives.
+        if (this.flight && !this.flight.moving) {
+            return;
+        }
 
         // Seeing further than the engine will stream: the half behind the camera is mostly off
         // screen, so slide the area forward, up to half its size (less when looking down).

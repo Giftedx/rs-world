@@ -1,7 +1,8 @@
-import { OTHER_NAME_ALPHA, isNameHidden, isNameHighlighted } from "./embed";
+import { OTHER_NAME_ALPHA, getNameListVersion, isNameHidden, isNameHighlighted } from "./embed";
 import { vec4 } from "gl-matrix";
 
 import { Camera } from "../mapviewer/Camera";
+import { NpcType } from "../rs/config/npctype/NpcType";
 import { IndexedSprite } from "../rs/sprite/IndexedSprite";
 import { LiveController } from "./LiveController";
 import { LiveEntity, LiveNpc, LivePlayer } from "./LiveEntity";
@@ -12,6 +13,8 @@ import { clipSegment, groundColour, markers, shortValue } from "./Markers";
 export type OverlayExtra = {
     groundAt: (fineX: number, fineZ: number, level: number) => number | undefined;
     objName: (id: number) => string | undefined;
+    // Changes when the ground under the markers can change (a map square loads or goes).
+    groundVersion: () => number;
 };
 
 // Markers are drawn this close to the camera (tiles).
@@ -113,6 +116,17 @@ export class LiveOverlay {
         { x: 0, y: 0 },
     ];
     private clipScratch: [number, number, number, number] = [0, 0, 0, 0];
+    // An npc's name with its level, by type, so a frame builds no label string.
+    private npcLabels: Map<NpcType, string> = new Map();
+
+    // What the canvas shows, as a flat list of the values each draw call uses (frameKey). A frame with the same list as
+    // the last drawn one leaves the canvas as it is: a still view costs no clear and no text drawing.
+    private key: (number | string)[] = [];
+    private drawnKey: (number | string)[] = [];
+    private drawn: boolean = false;
+    // Frames whose list matched the drawn one, and frames drawn (for tests and probes).
+    skipped: number = 0;
+    painted: number = 0;
 
     constructor() {
         this.canvas = document.createElement("canvas");
@@ -137,6 +151,10 @@ export class LiveOverlay {
         this.grid = new Uint8Array(0);
         this.gridCols = 0;
         this.gridRows = 0;
+        this.npcLabels.clear();
+        this.key.length = 0;
+        this.drawnKey.length = 0;
+        this.drawn = false;
     }
 
     private collectEntity(
@@ -226,7 +244,7 @@ export class LiveOverlay {
             showName && !(isPlayer && isNameHidden(e.getName()))
                 ? isPlayer
                     ? e.getName()
-                    : formatNpcName(e as LiveNpc)
+                    : this.npcLabel(e as LiveNpc)
                 : undefined;
         item.nameColour = isFollowed
             ? "#ff981f"
@@ -272,13 +290,12 @@ export class LiveOverlay {
         const targetW = Math.max(1, Math.round(width * dpr));
         const targetH = Math.max(1, Math.round(height * dpr));
         if (canvas.width !== targetW || canvas.height !== targetH) {
+            // A new size clears the canvas.
             canvas.width = targetW;
             canvas.height = targetH;
+            this.drawn = false;
         }
         const ctx = this.ctx;
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        ctx.clearRect(0, 0, width, height);
-        ctx.imageSmoothingEnabled = false;
 
         const { options, world } = controller;
         const loopCycle = world.loopCycle;
@@ -407,9 +424,26 @@ export class LiveOverlay {
             n.placed = this.occupy(n.top.x - half, y - 12, n.top.x + half, y + 2, false);
         }
 
-        // 3. Draw back to front: markers on the ground, names, health bars, hitmarks, then chat on top like the client.
-        if (extra) {
-            this.drawMarkers(controller, camera, extra, maxLevel, width, height, npcMarked);
+        // 3. Nothing to do when the canvas already shows this frame.
+        const drawMarks = !!extra && hasMarkers(controller, npcMarked);
+        const key = this.key;
+        key.length = 0;
+        frameKey(key, controller, camera, targetW, targetH, maxLevel, drawMarks ? extra : undefined, npcMarked, overlays, farNames);
+        if (this.drawn && sameKey(key, this.drawnKey)) {
+            this.skipped++;
+            return;
+        }
+        this.key = this.drawnKey;
+        this.drawnKey = key;
+        this.drawn = true;
+        this.painted++;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.imageSmoothingEnabled = false;
+
+        // 4. Draw back to front: markers on the ground, names, health bars, hitmarks, then chat on top like the client.
+        if (drawMarks) {
+            this.drawMarkers(controller, camera, extra!, maxLevel, width, height, npcMarked);
         }
         ctx.textAlign = "center";
         ctx.textBaseline = "alphabetic";
@@ -647,6 +681,15 @@ export class LiveOverlay {
         ctx.restore();
     }
 
+    private npcLabel(npc: LiveNpc): string {
+        let label = this.npcLabels.get(npc.npcType);
+        if (label === undefined) {
+            label = formatNpcName(npc);
+            this.npcLabels.set(npc.npcType, label);
+        }
+        return label;
+    }
+
     private resetGrid(width: number, height: number): void {
         const cols = Math.ceil(width / GRID_CELL);
         const rows = Math.ceil(height / GRID_CELL);
@@ -824,6 +867,82 @@ export class LiveOverlay {
         out.y = (1 - (ndcY * 0.5 + 0.5)) * height;
         return out;
     }
+}
+
+// True when the markers layer has something to draw.
+function hasMarkers(controller: LiveController, npcMarked: Map<LiveEntity, string>): boolean {
+    const state = controller.worldState;
+    return (
+        markers.lines.length > 0 ||
+        markers.tiles.length > 0 ||
+        markers.pies.length > 0 ||
+        markers.players.size > 0 ||
+        npcMarked.size > 0 ||
+        (markers.groundOn && !!state && state.objTiles.size > 0)
+    );
+}
+
+// Every value that the draw calls of a frame read, in draw order. Each group starts with its count or its flags, so two
+// different frames cannot give the same list. Markers read the camera and the ground; labels carry their screen place.
+function frameKey(
+    key: (number | string)[],
+    controller: LiveController,
+    camera: Camera,
+    width: number,
+    height: number,
+    maxLevel: number,
+    marks: OverlayExtra | undefined,
+    npcMarked: Map<LiveEntity, string>,
+    overlays: OverlayEntity[],
+    farNames: FarName[],
+): void {
+    const world = controller.world;
+    const loopCycle = world.loopCycle;
+    const fonts = typeof document !== "undefined" && document.fonts ? document.fonts.status : "";
+    key.push(width, height, fonts, markers.version, getNameListVersion());
+    key.push(controller.headIconSprites.length, controller.hitmarkSprites.length);
+    if (marks) {
+        const m = camera.viewProjMatrix;
+        for (let i = 0; i < 16; i++) key.push(m[i]);
+        key.push(maxLevel, marks.groundVersion(), controller.worldState?.objVersion ?? -1, npcMarked.size);
+        for (const n of npcMarked.keys()) key.push(n.x, n.z, n.level, n.size);
+        if (markers.players.size > 0) {
+            for (const p of world.players.values()) {
+                if (markers.playerColour(p.getName())) key.push(p.x, p.z, p.level);
+            }
+        }
+    }
+    key.push(farNames.length);
+    for (let i = 0; i < farNames.length; i++) {
+        const n = farNames[i];
+        key.push(n.placed ? 1 : 0);
+        if (n.placed) key.push(n.name, n.top.x, n.top.y, n.alpha);
+    }
+    key.push(overlays.length);
+    for (let i = 0; i < overlays.length; i++) {
+        const o = overlays[i];
+        const e = o.e;
+        const chat = o.chatY !== undefined;
+        key.push(o.name ?? "", o.top.x, o.top.y, o.nameY, o.nameColour, o.nameAlpha, o.combat ? 1 : 0, o.hitmarks ? 1 : 0, chat ? 1 : 0);
+        key.push(o.headIcons.length);
+        for (let j = 0; j < o.headIcons.length; j++) key.push(o.headIcons[j]);
+        if (o.combat) key.push(e.health, e.totalHealth);
+        // Hitmarks run out by the client cycle.
+        if (o.hitmarks) key.push(loopCycle, e.x, e.z, e.height);
+        if (chat) {
+            key.push(e.chatMessage ?? "", o.chatY!, o.head.x, e.chatColour, e.chatEffect);
+            // Flashing colours and the wave effect move with the client cycle.
+            if (e.chatColour >= CHAT_COLOURS.length || e.chatEffect === 1) key.push(loopCycle);
+        }
+    }
+}
+
+function sameKey(a: (number | string)[], b: (number | string)[]): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+        if (a[i] !== b[i]) return false;
+    }
+    return true;
 }
 
 function compareOverlayDistance(a: OverlayEntity, b: OverlayEntity): number {

@@ -1,5 +1,9 @@
+// Runs under Jest (`craco test`). Jest resolves Gzip to Gzip.web.ts, whose wasm-gzip package has no CommonJS entry;
+// the pool only asks it for its WebAssembly module, so a stand-in without one is enough.
 import { Bzip2 } from "../../rs/compression/Bzip2";
 import { RenderDataWorkerPool } from "./RenderDataWorkerPool";
+
+jest.mock("../../rs/compression/Gzip", () => ({ Gzip: { initWasm: () => Promise.resolve(), wasmModule: undefined } }));
 
 // A stand-in for one worker thread with the rules of RenderDataWorker: a task that reads the cache throws
 // "Worker not initialized" until the worker has had its initCache message.

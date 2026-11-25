@@ -64,6 +64,7 @@ if (from) {
             if (!Array.isArray(list)) return;
             for (const n of list) if (typeof n === "string" && n) hidden.add(n.toLowerCase());
             hiddenOrder = [...hiddenOrder, ...list.filter((n): n is string => typeof n === "string" && !!n)];
+            namesChanged();
         })
         .catch(() => {
             /* the dashboard is down: no extra hidden names */
@@ -81,19 +82,45 @@ if (hl) {
         .then((r) => r.json())
         .then((list: unknown) => {
             if (Array.isArray(list)) for (const n of list) if (typeof n === "string" && n) highlighted.add(n.toLowerCase());
+            namesChanged();
         })
         .catch(() => {
             /* no highlight */
         });
 }
+
+// The overlays ask about every player on every frame of every view. The answer for a name as the feed writes it is
+// kept until a name list changes, so a frame lowercases no name it has seen. Bit 1: hidden. Bit 2: highlighted.
+const NAME_HIDDEN = 1;
+const NAME_HIGHLIGHTED = 2;
+const nameFlags = new Map<string, number>();
+let nameVersion = 0;
+function namesChanged(): void {
+    nameFlags.clear();
+    nameVersion++;
+}
+function flagsOf(name: string): number {
+    let flags = nameFlags.get(name);
+    if (flags === undefined) {
+        const lower = name.toLowerCase();
+        flags = (hidden.has(lower) ? NAME_HIDDEN : 0) | (highlighted.has(lower) ? NAME_HIGHLIGHTED : 0);
+        if (nameFlags.size >= 5000) nameFlags.clear();
+        nameFlags.set(name, flags);
+    }
+    return flags;
+}
+// Changes when a name list changes: what the overlays drew for a name may be different now.
+export function getNameListVersion(): number {
+    return nameVersion;
+}
 export function isNameHighlighted(name: string | undefined): boolean {
-    return !!name && highlighted.has(name.toLowerCase());
+    return !!name && (flagsOf(name) & NAME_HIGHLIGHTED) !== 0;
 }
 // In embed mode other players' names are dimmed, so ours stand out.
 export const OTHER_NAME_ALPHA = EMBED ? 0.45 : 1;
 
 export function isNameHidden(name: string | undefined): boolean {
-    return !!name && hidden.has(name.toLowerCase());
+    return !!name && (flagsOf(name) & NAME_HIDDEN) !== 0;
 }
 
 // Resolves the marker to the real name once the hidden list has loaded; undefined means "not yet".

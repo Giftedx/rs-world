@@ -19,7 +19,7 @@ import { ObjStackability } from "../rs/config/objtype/ObjStackability";
 import { ObjTypeLoader } from "../rs/config/objtype/ObjTypeLoader";
 import { SeqTypeLoader } from "../rs/config/seqtype/SeqTypeLoader";
 import { EntityAnimData, EntityModelSpec } from "./EntityModelLoader";
-import { FAR_PLAYER_APPEARANCE, FAR_PLAYER_MODEL_KEY } from "./FarPlayers";
+import { FAR_PLAYER_APPEARANCE, FAR_PLAYER_MODEL_KEY, FarPlayer, MAX_GLIDE_TILES } from "./FarPlayers";
 import { LiveEntity, LiveNpc, LivePlayer } from "./LiveEntity";
 import { LiveWorld } from "./LiveWorld";
 import {
@@ -57,6 +57,10 @@ const FAR_PLAYER_SPEC: EntityModelSpec = {
     leftHand: -1,
     rightHand: -1,
 };
+// A loc's centre is at most this many tiles from its tile (half the largest loc size, rounded up).
+const LOC_RANGE_MARGIN = 16;
+const FAR_PLAYER_IDLE_KEY = "p" + FAR_PLAYER_MODEL_KEY + "@" + FAR_PLAYER_APPEARANCE.readyAnim;
+const FAR_PLAYER_WALK_KEY = "p" + FAR_PLAYER_MODEL_KEY + "@" + FAR_PLAYER_APPEARANCE.walkAnim;
 
 // One baked (model, seq): every frame of the animation in a single vertex/index buffer.
 class EntityAnimPage {
@@ -189,13 +193,11 @@ export class LiveEntityRenderer {
 
     // Ground height at a fine coord in the RS convention (negative is up), or undefined when the
     // map square isn't loaded. Bridges lift entities onto the level above, like the client.
-    getGroundHeight(
-        level: number,
-        fineX: number,
-        fineZ: number,
-    ): { y: number; plane: number } | undefined {
-        return getGroundHeight(this.mapManager, level, fineX, fineZ);
+    // The result is one object that the next call overwrites: read it at once.
+    getGroundHeight(level: number, fineX: number, fineZ: number): GroundHeight | undefined {
+        return getGroundHeight(this.mapManager, level, fineX, fineZ, this.groundOut);
     }
+    private readonly groundOut: GroundHeight = { y: 0, plane: 0 };
 
     prepare(maxLevel: number, camera: Camera, renderDistance: number): void {
         this.items.length = 0;
@@ -281,11 +283,8 @@ export class LiveEntityRenderer {
                 );
             } else {
                 const npcType = (e as LiveNpc).npcType.id;
-                page = this.requestPage(
-                    "n" + npcType + "@" + e.readyanim,
-                    { kind: "npc", npcType },
-                    e.readyanim,
-                );
+                const key = this.getNpcPageKey(npcType, e.readyanim);
+                page = this.pageOf(key) ?? this.requestPage(key, { kind: "npc", npcType }, e.readyanim);
             }
             frame = page
                 ? (Math.floor(this.world.loopCycle / FAR_FRAME_CYCLES) + e.id) % page.frames.length
@@ -298,17 +297,19 @@ export class LiveEntityRenderer {
                 seqId = e.primaryAnim;
                 frame = e.primaryAnimFrame;
             }
-            const model = this.getModelKey(e, seqId, distance);
-            if (!model) {
+            const key = this.getPageKey(e, seqId, distance);
+            if (key === undefined) {
                 return;
             }
-            page = this.requestPage(model.key + "@" + seqId, model.spec, seqId);
+            page = this.pageOf(key) ?? this.requestPage(key, this.getModelSpec(e, seqId, distance), seqId);
             if (!page && e.readyanim !== -1 && seqId !== e.readyanim) {
                 // Still baking: hold the idle pose instead of popping out.
-                const idle = this.getModelKey(e, e.readyanim, distance);
-                page = idle
-                    ? this.requestPage(idle.key + "@" + e.readyanim, idle.spec, e.readyanim)
-                    : undefined;
+                const idle = this.getPageKey(e, e.readyanim, distance);
+                page =
+                    idle === undefined
+                        ? undefined
+                        : (this.pageOf(idle) ??
+                          this.requestPage(idle, this.getModelSpec(e, e.readyanim, distance), e.readyanim));
                 frame = 0;
             }
         }
@@ -345,28 +346,20 @@ export class LiveEntityRenderer {
         }
 
         if (e.spotanimId !== -1 && e.spotanimFrame >= 0) {
-            const spot = this.world.spotAnimTypeLoader?.load(e.spotanimId);
-            if (spot) {
-                const spotSeq = spot.sequenceId;
-                const page = this.requestPage(
-                    "s" + e.spotanimId + "@" + spotSeq,
-                    { kind: "spot", spotAnim: e.spotanimId },
-                    spotSeq,
+            const page = this.getSpotPage(e.spotanimId);
+            if (page) {
+                this.pushItem(
+                    page,
+                    e.spotanimFrame,
+                    e.x,
+                    ground.y - e.spotanimHeight,
+                    e.z,
+                    e.yaw,
+                    0,
+                    ground.plane,
+                    e.id,
+                    interactType,
                 );
-                if (page) {
-                    this.pushItem(
-                        page,
-                        e.spotanimFrame,
-                        e.x,
-                        ground.y - e.spotanimHeight,
-                        e.z,
-                        e.yaw,
-                        0,
-                        ground.plane,
-                        e.id,
-                        interactType,
-                    );
-                }
             }
         }
     }
@@ -416,8 +409,14 @@ export class LiveEntityRenderer {
     // What a logged-in player sees of the zones besides players and npcs: changed and added
     // locs, ground obj stacks, map anims and projectiles, each on the view's floors only.
     private addWorldState(state: WorldState, maxLevel: number, renderDistance: number): void {
+        // The zone state holds the locs of every view's area: in a wall most are out of this view's range. A tile check
+        // comes first, with room for the centre of the largest loc; the exact check follows below.
+        const locRange = renderDistance + LOC_RANGE_MARGIN;
         for (const loc of state.locs.values()) {
             if (loc.level > maxLevel || this.items.length >= MAX_INSTANCES) {
+                continue;
+            }
+            if (this.isOutOfRange((loc.x << 7) + 64, (loc.z << 7) + 64, locRange)) {
                 continue;
             }
             const found = this.getStaticLoc?.(loc.x, loc.z, loc.level, loc.layer, this.staticLoc);
@@ -682,18 +681,47 @@ export class LiveEntityRenderer {
         const walk = this.getFarPlayerPage(true) ?? idle;
         const loopCycle = this.world.loopCycle;
         const t = far.getProgress(loopCycle);
-        for (const p of far.players.values()) {
-            if (this.items.length >= MAX_INSTANCES) {
-                break;
+        // Only the squares that can hold a player in range: a far player is drawn within MAX_GLIDE_TILES of their
+        // roster tile.
+        const reach = renderDistance + MAX_GLIDE_TILES;
+        const sx0 = Math.max(0, Math.floor((this.cameraX - reach) / 64));
+        const sx1 = Math.floor((this.cameraX + reach) / 64);
+        const sz0 = Math.max(0, Math.floor((this.cameraZ - reach) / 64));
+        const sz1 = Math.min(255, Math.floor((this.cameraZ + reach) / 64));
+        for (let sx = sx0; sx <= sx1; sx++) {
+            for (let sz = sz0; sz <= sz1; sz++) {
+                const list = far.squares.get(sx * 256 + sz);
+                if (list) {
+                    this.addFarSquare(list, maxLevel, renderDistance, t, loopCycle, idle, walk);
+                }
             }
-            if (p.level > maxLevel || this.world.players.has(p.slot)) {
+        }
+    }
+
+    private addFarSquare(
+        list: FarPlayer[],
+        maxLevel: number,
+        renderDistance: number,
+        t: number,
+        loopCycle: number,
+        idle: EntityAnimPage,
+        walk: EntityAnimPage,
+    ): void {
+        const far = this.world.far;
+        for (let i = 0; i < list.length; i++) {
+            const p = list[i];
+            if (this.items.length >= MAX_INSTANCES) {
+                return;
+            }
+            if (p.level > maxLevel) {
                 continue;
             }
             const x = Math.round(p.fromX + (p.toX - p.fromX) * t);
             const z = Math.round(p.fromZ + (p.toZ - p.fromZ) * t);
             if (
                 Math.abs(x / 128 - this.cameraX) > renderDistance ||
-                Math.abs(z / 128 - this.cameraZ) > renderDistance
+                Math.abs(z / 128 - this.cameraZ) > renderDistance ||
+                this.world.players.has(p.slot)
             ) {
                 continue;
             }
@@ -735,44 +763,86 @@ export class LiveEntityRenderer {
     // is still baking).
     private getFarPlayerPage(walking: boolean): EntityAnimPage | undefined {
         const seqId = walking ? FAR_PLAYER_APPEARANCE.walkAnim : FAR_PLAYER_APPEARANCE.readyAnim;
-        const page = this.requestPage(
-            "p" + FAR_PLAYER_MODEL_KEY + "@" + seqId,
-            FAR_PLAYER_SPEC,
-            seqId,
-        );
+        const key = walking ? FAR_PLAYER_WALK_KEY : FAR_PLAYER_IDLE_KEY;
+        const page = this.pageOf(key) ?? this.requestPage(key, FAR_PLAYER_SPEC, seqId);
         return page ?? (walking ? this.getFarPlayerPage(false) : undefined);
     }
 
-    // Which body to draw: npc type, or player appearance plus any held-item swap the seq makes.
-    private getModelKey(
-        e: LiveEntity,
-        seqId: number,
-        distance: number,
-    ): { key: string; spec: EntityModelSpec } | undefined {
+    private pageOf(key: string): EntityAnimPage | undefined {
+        const state = this.pages.get(key);
+        return state instanceof EntityAnimPage ? state : undefined;
+    }
+
+    // Page keys are strings: each one is built once and kept, so a frame builds none.
+    private npcPageKeys: Map<number, string> = new Map();
+
+    private getNpcPageKey(npcType: number, seqId: number): string {
+        // npcType < 2^16, seqId + 1 < 2^16.
+        const packed = npcType * 65536 + (seqId + 1);
+        let key = this.npcPageKeys.get(packed);
+        if (key === undefined) {
+            key = "n" + npcType + "@" + seqId;
+            this.npcPageKeys.set(packed, key);
+        }
+        return key;
+    }
+
+    // The held-item swap a seq makes on a player's body (-1 for none).
+    private getHands(e: LiveEntity, seqId: number, out: [number, number]): [number, number] {
+        out[0] = -1;
+        out[1] = -1;
+        if (seqId !== -1 && seqId === e.primaryAnim) {
+            const seq = this.seqTypeLoader.load(seqId);
+            out[0] = seq.leftHandItem;
+            out[1] = seq.rightHandItem;
+        }
+        return out;
+    }
+    private hands: [number, number] = [-1, -1];
+
+    // Which body to draw, as its page key: npc type, or player appearance plus any held-item swap the seq makes. The
+    // entity keeps its last key with what it was built from, so a frame builds a string only when one of them changes.
+    private getPageKey(e: LiveEntity, seqId: number, distance: number): string | undefined {
+        let model: string | number;
+        let left = -1;
+        let right = -1;
         if (e instanceof LiveNpc) {
-            return { key: "n" + e.npcType.id, spec: { kind: "npc", npcType: e.npcType.id } };
+            model = e.npcType.id;
+        } else {
+            const player = e as LivePlayer;
+            if (!player.appearance) {
+                return undefined;
+            }
+            const hands = this.getHands(e, seqId, this.hands);
+            left = hands[0];
+            right = hands[1];
+            model = distance > this.detailDistance ? player.lodModelKey : player.modelKey;
+        }
+        const cached = e.pageKey;
+        if (cached.model === model && cached.seq === seqId && cached.left === left && cached.right === right) {
+            return cached.key;
+        }
+        const key =
+            typeof model === "number"
+                ? "n" + model + "@" + seqId
+                : "p" + model + (left >= 0 || right >= 0 ? `|${left}|${right}` : "") + "@" + seqId;
+        cached.model = model;
+        cached.seq = seqId;
+        cached.left = left;
+        cached.right = right;
+        cached.key = key;
+        return key;
+    }
+
+    // What the worker bakes for a page key from getPageKey (built only for a page that is not baked yet).
+    private getModelSpec(e: LiveEntity, seqId: number, distance: number): EntityModelSpec {
+        if (e instanceof LiveNpc) {
+            return { kind: "npc", npcType: e.npcType.id };
         }
         const player = e as LivePlayer;
-        if (!player.appearance) {
-            return undefined;
-        }
-        let leftHand = -1;
-        let rightHand = -1;
-        if (seqId !== -1 && seqId === player.primaryAnim) {
-            const seq = this.seqTypeLoader.load(seqId);
-            leftHand = seq.leftHandItem;
-            rightHand = seq.rightHandItem;
-        }
-        const far = distance > this.detailDistance;
-        const appearance = far ? player.lodAppearance! : player.appearance;
-        const modelKey = far ? player.lodModelKey : player.modelKey;
-        return {
-            key:
-                "p" +
-                modelKey +
-                (leftHand >= 0 || rightHand >= 0 ? `|${leftHand}|${rightHand}` : ""),
-            spec: { kind: "player", appearance, leftHand, rightHand },
-        };
+        const [leftHand, rightHand] = this.getHands(e, seqId, [-1, -1]);
+        const appearance = distance > this.detailDistance ? player.lodAppearance! : player.appearance!;
+        return { kind: "player", appearance, leftHand, rightHand };
     }
 
     private requestPage(
@@ -1034,17 +1104,22 @@ export class LiveEntityRenderer {
         this.objDraws.length = 0;
         this.objPageKeys.clear();
         this.locPageKeys.clear();
+        this.npcPageKeys.clear();
         this.spotPageKeys.clear();
         this.order.length = 0;
     }
 }
 
+export type GroundHeight = { y: number; plane: number };
+
+// Writes into `out` when given: the per-frame callers pass one object they read at once, so a frame allocates none.
 export function getGroundHeight(
     mapManager: MapManager<WebGLMapSquare>,
     level: number,
     fineX: number,
     fineZ: number,
-): { y: number; plane: number } | undefined {
+    out?: GroundHeight,
+): GroundHeight | undefined {
     const tileX = fineX >> 7;
     const tileZ = fineZ >> 7;
     const map = mapManager.getMap(tileX >> 6, tileZ >> 6);
@@ -1058,5 +1133,10 @@ export function getGroundHeight(
         plane++;
     }
     const y = map.getHeightInterp(plane, fineX & 0x1fff, fineZ & 0x1fff);
-    return { y, plane };
+    if (!out) {
+        return { y, plane };
+    }
+    out.y = y;
+    out.plane = plane;
+    return out;
 }

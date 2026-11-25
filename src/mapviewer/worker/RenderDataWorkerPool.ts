@@ -1,4 +1,4 @@
-import { ModuleThread, Pool, spawn } from "threads";
+import { ModuleThread, Pool } from "threads";
 import { QueuedTask } from "threads/dist/master/pool";
 import { WorkerDescriptor } from "threads/dist/master/pool-types";
 import { ObservablePromise } from "threads/dist/observable-promise";
@@ -14,13 +14,9 @@ import { RenderDataWorker, WorkerWasm } from "./RenderDataWorker";
 
 type RenderDataWorkerThread = ModuleThread<RenderDataWorker>;
 
-function spawnWorker(): Promise<RenderDataWorkerThread> {
-    const worker = new Worker(new URL("./RenderDataWorker", import.meta.url));
-    return spawn<RenderDataWorker>(worker);
-}
-
 export class RenderDataWorkerPool {
-    static create(size: number): RenderDataWorkerPool {
+    // spawnWorker is spawnRenderDataWorker in the app. It comes in as an argument, so this file has no `import.meta`.
+    static create(size: number, spawnWorker: () => Promise<RenderDataWorkerThread>): RenderDataWorkerPool {
         const pool = Pool(() => spawnWorker(), size);
         const workers = pool["workers"] as WorkerDescriptor<RenderDataWorkerThread>[];
         return new RenderDataWorkerPool(pool, workers, size);

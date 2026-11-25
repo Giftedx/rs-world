@@ -1,8 +1,14 @@
 import { PlayerAppearance, getAppearanceModelKey } from "./PlayerAppearance";
 import { RosterPlayer } from "./protocol";
 
-// A roster position change bigger than this is a teleport: jump instead of gliding.
-const MAX_GLIDE_TILES = 12;
+// A roster position change bigger than this is a teleport: jump instead of gliding. So a far player is drawn at most
+// this far from their roster tile.
+export const MAX_GLIDE_TILES = 12;
+
+// The 64-tile square of a fine position, as the key of FarPlayers.squares.
+export function farSquareKey(fineX: number, fineZ: number): number {
+    return (fineX >> 13) * 256 + (fineZ >> 13);
+}
 
 // One online player as the roster has them, in fine units at the tile centre.
 export type FarPlayer = {
@@ -44,6 +50,8 @@ export const FAR_PLAYER_MODEL_KEY = getAppearanceModelKey(FAR_PLAYER_APPEARANCE)
 // tile over one roster interval, so they move instead of jumping.
 export class FarPlayers {
     players: Map<number, FarPlayer> = new Map();
+    // The same players by the 64-tile square of their roster tile, so a view walks only the squares near its camera.
+    squares: Map<number, FarPlayer[]> = new Map();
 
     private glideStartCycle: number = 0;
     private lastRosterCycle: number = -1;
@@ -90,10 +98,29 @@ export class FarPlayers {
                 this.players.delete(slot);
             }
         }
+
+        for (const list of this.squares.values()) {
+            list.length = 0;
+        }
+        for (const p of this.players.values()) {
+            const key = farSquareKey(p.toX, p.toZ);
+            let list = this.squares.get(key);
+            if (!list) {
+                list = [];
+                this.squares.set(key, list);
+            }
+            list.push(p);
+        }
+        for (const [key, list] of this.squares) {
+            if (list.length === 0) {
+                this.squares.delete(key);
+            }
+        }
     }
 
     clear(): void {
         this.players.clear();
+        this.squares.clear();
         this.lastRosterCycle = -1;
     }
 

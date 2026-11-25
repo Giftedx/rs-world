@@ -29,9 +29,12 @@ export class MarkerStore {
     groundPrices: Map<string, number> = new Map();
     groundMin = 0;
     groundOn = false;
+    // Changes with each overlay message: what the views drew from the markers may be different now.
+    version = 0;
 
     setOverlay(raw: unknown): void {
         const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+        this.version++;
         this.tiles = list(o.tiles, 600).flatMap((t: any) =>
             t && coord(t.x) && coord(t.z) && level(t.l) && COLOUR.test(t.colour)
                 ? [{ x: t.x, z: t.z, l: t.l, colour: t.colour, label: label(t.label), fill: t.fill === true, size: Number.isInteger(t.size) && t.size >= 1 && t.size <= 5 ? t.size : 1 }]

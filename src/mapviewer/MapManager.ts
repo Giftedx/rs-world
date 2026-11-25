@@ -53,6 +53,11 @@ export class MapManager<T extends MapSquare> {
     cacheBudget: number = 64;
     // Squares in view this frame that are not loaded yet: they draw as blank (black) ground.
     blankOnScreen: number = 0;
+    // Changes with each clearMaps(). A worker load started before it must not add its square: the load sets were
+    // emptied, so the same square may load again and the two would be uploaded.
+    generation: number = 0;
+    // Changes when a square is added or removed.
+    squareVersion: number = 0;
     private frameCount: number = 0;
     private lastUsed: Map<number, number> = new Map();
     private useClock: number = 0;
@@ -107,6 +112,8 @@ export class MapManager<T extends MapSquare> {
     }
 
     clearMaps(): void {
+        this.generation++;
+        this.squareVersion++;
         this.invalidMapIds.clear();
         this.loadingMapIds.clear();
         this.pendingUploadIds.clear();
@@ -114,6 +121,7 @@ export class MapManager<T extends MapSquare> {
             map.delete();
         }
         this.mapSquares.clear();
+        this.lastUsed.clear();
     }
 
     getMap(mapX: number, mapY: number): T | undefined {
@@ -124,6 +132,23 @@ export class MapManager<T extends MapSquare> {
         const mapId = getMapSquareId(mapX, mapY);
         this.loadingMapIds.delete(mapId);
         this.pendingUploadIds.add(mapId);
+    }
+
+    // The end of a worker load that started in `generation`: "loaded" waits for its upload, "invalid" (built for other
+    // settings) and "failed" free the square to load again, "empty" marks it as no square. A load from before
+    // clearMaps() changes nothing and returns false: the caller drops its data.
+    finishLoad(generation: number, mapX: number, mapY: number, outcome: "loaded" | "invalid" | "empty" | "failed"): boolean {
+        if (generation !== this.generation) {
+            return false;
+        }
+        if (outcome === "loaded") {
+            this.markWorkerDone(mapX, mapY);
+        } else if (outcome === "empty") {
+            this.addInvalidMap(mapX, mapY);
+        } else {
+            this.cancelWorker(mapX, mapY);
+        }
+        return true;
     }
 
     cancelWorker(mapX: number, mapY: number): void {
@@ -142,8 +167,14 @@ export class MapManager<T extends MapSquare> {
         this.loadingMapIds.delete(mapId);
         this.pendingUploadIds.delete(mapId);
         this.invalidMapIds.delete(mapId);
+        // A square that is already there would keep its GL buffers with nothing left to delete them.
+        const old = this.mapSquares.get(mapId);
+        if (old && old !== mapSquare) {
+            old.delete();
+        }
         this.mapSquares.set(mapId, mapSquare);
         this.lastUsed.set(mapId, ++this.useClock);
+        this.squareVersion++;
     }
 
     // Loads the squares around a tile ahead of the camera (a flight's destination), nearest first.
@@ -182,6 +213,7 @@ export class MapManager<T extends MapSquare> {
         if (map) {
             map.delete();
             this.mapSquares.delete(mapId);
+            this.squareVersion++;
         }
     }
 
