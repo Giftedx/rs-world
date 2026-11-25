@@ -71,6 +71,8 @@ function copyRect(out: PaneRect, from: PaneRect): void {
 export class MultiPane {
     readonly overlay = new LiveOverlay();
     farLabels: FarPlayerLabel[] = [];
+    // The pane's own label objects: the renderer reuses its labels for the next pane before any overlay draws.
+    readonly farLabelCopies: FarPlayerLabel[] = [];
     // Where the pane is drawn now (CSS pixels of the GL canvas), and the move it is making.
     rect: PaneRect = { x: 0, y: 0, w: 1, h: 1 };
     readonly from: PaneRect = { x: 0, y: 0, w: 1, h: 1 };

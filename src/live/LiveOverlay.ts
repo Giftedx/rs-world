@@ -163,10 +163,12 @@ export class LiveOverlay {
         const near = isFollowed || (Math.abs(dx) <= LABEL_DISTANCE && Math.abs(dz) <= LABEL_DISTANCE);
         const nameAlpha = isFollowed ? 1 : getFogVisibility(dx, dz, renderDistance, fogDepth);
 
-        const marked = isPlayer ? markers.playerColour(e.getName()) : this.npcMarked.get(e);
+        // An npc's mark decides whether its name shows; a player's mark only colours a name that shows anyway, so it is
+        // looked up after the early returns below (a player in the fog draws nothing).
+        const npcMark = isPlayer ? undefined : this.npcMarked.get(e);
         const showName =
             nameAlpha > 0 &&
-            (isFollowed || (isPlayer ? options.showPlayerNames : (options.showNpcNames || !!marked) && near));
+            (isFollowed || (isPlayer ? options.showPlayerNames : (options.showNpcNames || !!npcMark) && near));
         // Same windows as the client: health bar for 300 cycles after a hit, hitmarks 70.
         const combat = near && options.showCombat && e.combatCycle > loopCycle + 100 && e.totalHealth > 0;
         const chat = near && options.showChat && e.chatMessage !== null && e.chatTimer > 0;
@@ -184,6 +186,7 @@ export class LiveOverlay {
         if (groundY === undefined) {
             return;
         }
+        const marked = isPlayer ? markers.playerColour(e.getName()) : npcMark;
         // The client anchors the health bar 15 units above the head and chat at the head.
         if (
             !this.project(camera, e.x, groundY - e.height - 15, e.z, width, height, this.topTemp) ||

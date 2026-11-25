@@ -22,6 +22,10 @@ export function postTiming(mode: "flight" | "snap", ms: number, tiles: number, f
 }
 // ?ml=<0-3> sets the highest floor drawn from the first frame; a {maxLevel} message changes it.
 export const isFloor = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 3;
+// ?fps and {fps}: 1 to 999 frames a second (the page sends 1 while its 2D map shows). ?scale and {scale}: 0.1 to 4
+// rendered pixels per CSS pixel. A value outside would stop the view or make its framebuffers too big for the GPU.
+export const isFrameLimit = (v: unknown): v is number => typeof v === "number" && v >= 1 && v <= 999;
+export const isResolutionScale = (v: unknown): v is number => typeof v === "number" && v >= 0.1 && v <= 4;
 const firstFloor = parseInt(params.get("ml") ?? "");
 export const FIRST_MAX_LEVEL: number | undefined = isFloor(firstFloor) ? firstFloor : undefined;
 export const MAIN_MARK = "⟦MAIN⟧";

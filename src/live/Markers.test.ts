@@ -59,4 +59,16 @@ describe("clipSegment", () => {
         expect(clipSegment(0, 0, 10, 10, 2, 2, 4, 4, out)).toBe(out);
         expect(out).toEqual([2, 2, 4, 4]);
     });
+
+    test("a player's colour is found by any case of the name, and a new overlay message replaces it", () => {
+        const m = new MarkerStore();
+        m.setOverlay({ players: { goondelf: "#00ffff" } });
+        expect(m.playerColour("Goondelf")).toBe("#00ffff");
+        expect(m.playerColour("Goondelf")).toBe("#00ffff");
+        expect(m.playerColour("Other")).toBeUndefined();
+        expect(m.playerColour(undefined)).toBeUndefined();
+        m.setOverlay({ players: { other: "#ff0000" } });
+        expect(m.playerColour("Goondelf")).toBeUndefined();
+        expect(m.playerColour("Other")).toBe("#ff0000");
+    });
 });

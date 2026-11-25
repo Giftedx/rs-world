@@ -203,7 +203,6 @@ export class MapManager<T extends MapSquare> {
         ) {
             return;
         }
-        console.log("Loading map", mapX, mapY);
         this.loadingMapIds.add(mapId);
         this.loadMapFunction(mapX, mapY);
     }

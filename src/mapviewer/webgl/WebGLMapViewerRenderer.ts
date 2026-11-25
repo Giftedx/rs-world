@@ -1447,10 +1447,25 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                 liveRenderer.showPlayers = pane.live.options.showPlayers;
                 liveRenderer.showNpcs = pane.live.options.showNpcs;
                 liveRenderer.prepare(paneLevel, paneCamera, renderDistance);
+                // Copies, not references: the next pane's prepare() rewrites the renderer's label objects, and the
+                // overlays are drawn after every pane is prepared.
                 const paneLabels = pane.farLabels;
+                const pool = pane.farLabelCopies;
                 paneLabels.length = 0;
                 for (let f = 0; f < liveRenderer.farLabels.length; f++) {
-                    paneLabels.push(liveRenderer.farLabels[f]);
+                    const from = liveRenderer.farLabels[f];
+                    let label = pool[f];
+                    if (!label) {
+                        label = { ...from };
+                        pool.push(label);
+                    } else {
+                        label.name = from.name;
+                        label.x = from.x;
+                        label.z = from.z;
+                        label.groundY = from.groundY;
+                        label.height = from.height;
+                    }
+                    paneLabels.push(label);
                 }
 
                 this.app.disable(PicoGL.BLEND);

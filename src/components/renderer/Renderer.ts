@@ -63,18 +63,19 @@ export abstract class Renderer {
 
     frameCallback = (time: DOMHighResTimeStamp) => {
         try {
-            const resized = resizeCanvas(this.canvas, this.resolutionScale);
-            if (resized) {
-                this.onResize(this.canvas.width, this.canvas.height);
-            }
-
             const deltaTime = this.stats.getDeltaTime(time);
 
+            // A frame that the limit skips reads no layout: the canvas size is read only for a frame that draws.
             if (this.fpsLimit && deltaTime > 0 && !this.needsEveryFrame()) {
                 const tolerance = 1;
                 if (deltaTime < 1000 / this.fpsLimit - tolerance) {
                     return;
                 }
+            }
+
+            const resized = resizeCanvas(this.canvas, this.resolutionScale);
+            if (resized) {
+                this.onResize(this.canvas.width, this.canvas.height);
             }
 
             this.stats.update(time);

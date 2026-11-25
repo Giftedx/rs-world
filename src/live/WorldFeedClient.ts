@@ -14,6 +14,10 @@ type Area = { x: number; z: number; w: number; h: number };
 const MAX_RECONNECT_DELAY_MS = 15_000;
 const INITIAL_RECONNECT_DELAY_MS = 300;
 const HEARTBEAT_INTERVAL_MS = 30_000;
+// The feed sends a tick about every 400 ms to a subscribed area, an empty one too. A socket that stays open with no
+// data for this long is dead (a sleep or a network change can leave it half open), so it is dropped and opened again.
+export const SILENT_FEED_MS = 15_000;
+const SILENCE_CHECK_MS = 5_000;
 
 // Keeps one WebSocket to the engine's /worldfeed open, re-subscribing after reconnects.
 export class WorldFeedClient {
@@ -38,6 +42,8 @@ export class WorldFeedClient {
     private reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
     private reconnectTimer?: ReturnType<typeof setTimeout>;
     private heartbeatTimer?: ReturnType<typeof setInterval>;
+    private silenceTimer?: ReturnType<typeof setInterval>;
+    private lastDataAt = 0;
     private stopped = false;
 
     constructor(
@@ -60,6 +66,7 @@ export class WorldFeedClient {
         this.stopped = true;
         clearTimeout(this.reconnectTimer);
         clearInterval(this.heartbeatTimer);
+        clearInterval(this.silenceTimer);
         this.ws?.close();
         this.ws = undefined;
         this.setStatus("closed");
@@ -69,6 +76,7 @@ export class WorldFeedClient {
         this.stopped = true;
         clearTimeout(this.reconnectTimer);
         clearInterval(this.heartbeatTimer);
+        clearInterval(this.silenceTimer);
         const previous = this.ws;
         this.ws = undefined;
         if (previous && previous.readyState < WebSocket.CLOSING) {
@@ -106,9 +114,41 @@ export class WorldFeedClient {
     }
 
     private onVisibilityChange = (): void => {
+        // A hidden page subscribes to nothing, so the silence before it is shown again does not count.
+        this.lastDataAt = Date.now();
         this.sendArea();
         this.sendRoster();
     };
+
+    // True when an open socket that streams an area has sent nothing for SILENT_FEED_MS.
+    isSilent(now: number): boolean {
+        const area = this.area;
+        return (
+            this.ws?.readyState === WebSocket.OPEN &&
+            !this.hidden &&
+            !!area &&
+            area.w > 0 &&
+            area.h > 0 &&
+            now - this.lastDataAt > SILENT_FEED_MS
+        );
+    }
+
+    private dropSilent(ws: WebSocket): void {
+        if (this.ws !== ws || !this.isSilent(Date.now())) {
+            return;
+        }
+        // onclose of a half-open socket can come minutes later: forget it now and open a new one.
+        clearInterval(this.heartbeatTimer);
+        clearInterval(this.silenceTimer);
+        this.ws = undefined;
+        try {
+            ws.close(4000, "No data");
+        } catch {
+            /* already closing */
+        }
+        this.setStatus("closed", `no data for ${SILENT_FEED_MS / 1000} s`);
+        this.scheduleReconnect();
+    }
 
     private open(): void {
         this.setStatus("connecting");
@@ -128,6 +168,7 @@ export class WorldFeedClient {
                 return;
             }
             this.reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
+            this.lastDataAt = Date.now();
             this.setStatus("open");
             this.sendArea();
             if (this.roster) {
@@ -139,9 +180,14 @@ export class WorldFeedClient {
                     ws.send(JSON.stringify({ t: "ping" }));
                 }
             }, HEARTBEAT_INTERVAL_MS);
+            clearInterval(this.silenceTimer);
+            this.silenceTimer = setInterval(() => this.dropSilent(ws), SILENCE_CHECK_MS);
         };
 
         ws.onmessage = (event) => {
+            if (this.ws === ws) {
+                this.lastDataAt = Date.now();
+            }
             if (typeof event.data !== "string") {
                 return;
             }
@@ -176,6 +222,7 @@ export class WorldFeedClient {
                 return;
             }
             clearInterval(this.heartbeatTimer);
+            clearInterval(this.silenceTimer);
             this.ws = undefined;
             const reason =
                 event.reason ||
