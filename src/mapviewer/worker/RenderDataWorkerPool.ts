@@ -26,13 +26,18 @@ export class RenderDataWorkerPool {
         return new RenderDataWorkerPool(pool, workers, size);
     }
 
+    // Resolves when every worker has the cache that initCache sent last. The pool starts a task on a worker as soon as
+    // the worker runs, but initCache reaches the worker only after the WebAssembly loads on this thread. A worker
+    // without its cache throws "Worker not initialized", so each task that reads the cache waits for this first.
+    private cacheReady: Promise<void> | undefined;
+
     constructor(
         readonly pool: Pool<RenderDataWorkerThread>,
         readonly workers: WorkerDescriptor<RenderDataWorkerThread>[],
         readonly size: number,
     ) {}
 
-    initCache(cache: LoadedCache, npcSpawns: NpcSpawn[]): void {
+    initCache(cache: LoadedCache, npcSpawns: NpcSpawn[]): Promise<void> {
         const wasmReady: Promise<WorkerWasm | undefined> = Promise.all([
             Bzip2.initWasm().catch(() => undefined),
             Gzip.initWasm().catch(() => undefined),
@@ -41,16 +46,29 @@ export class RenderDataWorkerPool {
                 ? { bz2: Bzip2.wasmModule, gzip: Gzip.wasmModule }
                 : undefined,
         );
-        for (const worker of this.workers) {
-            Promise.all([worker.init, wasmReady]).then(async ([w, wasm]) => {
-                try {
-                    await w.initCache(cache, npcSpawns, wasm);
-                } catch {
-                    // Fall back without shared WebAssembly.Module if structured clone rejects it.
-                    await w.initCache(cache, npcSpawns);
-                }
-            });
-        }
+        const ready = Promise.all(
+            this.workers.map((worker) =>
+                Promise.all([worker.init, wasmReady]).then(async ([w, wasm]) => {
+                    try {
+                        await w.initCache(cache, npcSpawns, wasm);
+                    } catch {
+                        // Fall back without shared WebAssembly.Module if structured clone rejects it.
+                        await w.initCache(cache, npcSpawns);
+                    }
+                }),
+            ),
+        ).then(() => undefined);
+        this.cacheReady = ready;
+        return ready;
+    }
+
+    private afterCache<R>(
+        task: (w: RenderDataWorkerThread) => PromiseLike<R>,
+    ): (w: RenderDataWorkerThread) => Promise<R> {
+        return async (w) => {
+            await this.cacheReady;
+            return task(w);
+        };
     }
 
     async runAll(task: (w: RenderDataWorkerThread) => any): Promise<void> {
@@ -69,14 +87,18 @@ export class RenderDataWorkerPool {
         loader: Loader,
         input: I,
     ): QueuedTask<RenderDataWorkerThread, D> {
-        return this.pool.queue((w) => w.load(loader, input) as ObservablePromise<D>);
+        return this.pool.queue(
+            this.afterCache((w) => w.load(loader, input) as ObservablePromise<D>),
+        );
     }
 
     queueEntityAnim(
         request: EntityAnimRequest,
     ): QueuedTask<RenderDataWorkerThread, EntityAnimData | undefined> {
         return this.pool.queue(
-            (w) => w.loadEntityAnim(request) as ObservablePromise<EntityAnimData | undefined>,
+            this.afterCache(
+                (w) => w.loadEntityAnim(request) as ObservablePromise<EntityAnimData | undefined>,
+            ),
         );
     }
 
@@ -87,7 +109,9 @@ export class RenderDataWorkerPool {
         brightness: number,
     ): QueuedTask<RenderDataWorkerThread, Int32Array> {
         return this.pool.queue(
-            (w) => w.loadTexture(id, size, flipH, brightness) as ObservablePromise<Int32Array>,
+            this.afterCache(
+                (w) => w.loadTexture(id, size, flipH, brightness) as ObservablePromise<Int32Array>,
+            ),
         );
     }
 
@@ -97,15 +121,17 @@ export class RenderDataWorkerPool {
         level: number,
         drawMapFunctions: boolean,
     ): QueuedTask<RenderDataWorkerThread, MinimapData | undefined> {
-        return this.pool.queue((w) => w.loadMapImage(mapX, mapY, level, drawMapFunctions));
+        return this.pool.queue(
+            this.afterCache((w) => w.loadMapImage(mapX, mapY, level, drawMapFunctions)),
+        );
     }
 
     setVars(vars: Int32Array): Promise<void> {
-        return this.runAll((w) => w.setVars(vars));
+        return this.runAll(this.afterCache((w) => w.setVars(vars)));
     }
 
     loadCachedMapImages(): QueuedTask<RenderDataWorkerThread, Map<number, string>> {
-        return this.pool.queue((w) => w.loadCachedMapImages());
+        return this.pool.queue(this.afterCache((w) => w.loadCachedMapImages()));
     }
 
     terminate(): Promise<void> {
