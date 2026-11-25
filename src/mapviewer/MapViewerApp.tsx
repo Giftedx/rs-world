@@ -15,6 +15,7 @@ import { fetchNpcSpawns, getNpcSpawnsUrl } from "./data/npc/NpcSpawn";
 import { WebGLMapViewerRenderer } from "./webgl/WebGLMapViewerRenderer";
 import { renderDataLoaderSerializer } from "./worker/RenderDataLoader";
 import { RenderDataWorkerPool } from "./worker/RenderDataWorkerPool";
+import { spawnRenderDataWorker } from "./worker/spawnRenderDataWorker";
 
 registerSerializer(renderDataLoaderSerializer);
 
@@ -38,6 +39,7 @@ const workerPool = RenderDataWorkerPool.create(
           : !isSharedMemorySupported || isTouchDevice
             ? 2
             : 4,
+    spawnRenderDataWorker,
 );
 
 function MapViewerApp() {

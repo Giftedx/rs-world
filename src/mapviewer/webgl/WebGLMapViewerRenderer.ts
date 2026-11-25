@@ -21,7 +21,7 @@ import { OsrsMenuEntry } from "../../components/rs/menu/OsrsMenu";
 import { WARM_RADIUS } from "../../live/CameraFlight";
 import { LiveController } from "../../live/LiveController";
 import { LiveEntity } from "../../live/LiveEntity";
-import { LiveEntityRenderer, getGroundHeight } from "../../live/LiveEntityRenderer";
+import { GroundHeight, LiveEntityRenderer, getGroundHeight } from "../../live/LiveEntityRenderer";
 import { LiveOverlay, OverlayExtra } from "../../live/LiveOverlay";
 import { viewportRect } from "../../live/MultiLayout";
 import { MultiView } from "../../live/MultiView";
@@ -686,6 +686,9 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     }
 
     override async queueLoadMap(mapX: number, mapY: number): Promise<void> {
+        // A load from before clearMaps() is dropped: the maps were cleared under it, and the same square may be
+        // loading again for the new settings.
+        const generation = this.mapManager.generation;
         try {
             const mapData = await this.mapViewer.workerPool.queueLoad<
                 SdMapLoaderInput,
@@ -701,19 +704,14 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                 loadedTextureIds: this.loadedTextureIds,
             });
 
-            if (mapData) {
-                if (this.isValidMapData(mapData)) {
-                    this.mapManager.markWorkerDone(mapX, mapY);
-                    this.mapsToLoad.push(mapData);
-                } else {
-                    this.mapManager.cancelWorker(mapX, mapY);
-                }
-            } else {
-                this.mapManager.addInvalidMap(mapX, mapY);
+            const outcome = !mapData ? "empty" : this.isValidMapData(mapData) ? "loaded" : "invalid";
+            if (this.mapManager.finishLoad(generation, mapX, mapY, outcome) && outcome === "loaded") {
+                this.mapsToLoad.push(mapData!);
             }
         } catch (err) {
-            this.mapManager.cancelWorker(mapX, mapY);
-            console.error(`Failed loading map square ${mapX},${mapY}`, err);
+            if (this.mapManager.finishLoad(generation, mapX, mapY, "failed")) {
+                console.error(`Failed loading map square ${mapX},${mapY}`, err);
+            }
         }
     }
 
@@ -1631,14 +1629,17 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                 return undefined;
             }
         },
+        groundVersion: () => this.mapManager.squareVersion,
     };
+
+    private readonly tileGround: GroundHeight = { y: 0, plane: 0 };
 
     getLiveGroundY = (e: LiveEntity): number | undefined => {
         return this.liveRenderer?.getGroundHeight(e.level, e.x, e.z)?.y;
     };
 
     override getTileGroundY = (level: number, fineX: number, fineZ: number): number | undefined => {
-        return getGroundHeight(this.mapManager, level, fineX, fineZ)?.y;
+        return getGroundHeight(this.mapManager, level, fineX, fineZ, this.tileGround)?.y;
     };
 
     private canShowMultiPane = (e: LiveEntity): boolean => {

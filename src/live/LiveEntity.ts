@@ -24,6 +24,14 @@ export function getPostanimMove(seq: SeqType): number {
     return seq.masks ? SeqMove.MERGE : SeqMove.DELAYMOVE;
 }
 
+export type PageKeyCache = {
+    model: string | number | undefined;
+    seq: number;
+    left: number;
+    right: number;
+    key: string;
+};
+
 // Client-side state of one player or npc, mirroring ClientEntity in the rs-sdk webclient.
 // Coordinates are absolute: route in tiles, x/z in fine units (1/128 tile) at the entity centre.
 export abstract class LiveEntity {
@@ -92,6 +100,9 @@ export abstract class LiveEntity {
 
     // Height of the last rendered frame above the ground (fine units), for overlays.
     height: number = 200;
+
+    // The entity renderer's last page key and what it was built from (LiveEntityRenderer.getPageKey).
+    pageKey: PageKeyCache = { model: undefined, seq: -2, left: -1, right: -1, key: "" };
 
     constructor(readonly id: number) {}
 
