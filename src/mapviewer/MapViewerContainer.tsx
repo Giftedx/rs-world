@@ -12,7 +12,7 @@ import { LiveOverlay } from "../live/LiveOverlay";
 import { LivePanel } from "../live/LivePanel";
 import { parseMultiDistance, parseMultiNames } from "../live/MultiLayout";
 import { markers } from "../live/Markers";
-import { EMBED, PROBE, isFloor } from "../live/embed";
+import { EMBED, PROBE, isFloor, isFrameLimit, isResolutionScale, resolveFollow } from "../live/embed";
 import { RS_TO_DEGREES } from "../rs/MathConstants";
 import { isMobileDevice, isTouchDevice } from "../util/DeviceUtil";
 import { MapViewer } from "./MapViewer";
@@ -74,13 +74,16 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
     useEffect(() => {
         const q = new URLSearchParams(window.location.search);
         const fps = Number(q.get("fps"));
-        if (fps > 0) renderer.fpsLimit = fps;
+        if (isFrameLimit(fps)) renderer.fpsLimit = fps;
         // ?scale=0.5 renders at half resolution: about a quarter of the pixel work.
         const scale = Number(q.get("scale"));
-        if (scale > 0) renderer.resolutionScale = scale;
+        if (isResolutionScale(scale)) renderer.resolutionScale = scale;
         const onMessage = (e: MessageEvent) => {
             const d = e.data;
             if (!d || typeof d !== "object") return;
+            // Only the embedding page (or this window) drives the view: another window or frame could otherwise
+            // set a frame rate or resolution that stops or crashes it.
+            if (e.source !== window.parent && e.source !== window) return;
             // {multi: [names...]} shows those players side by side (at most 16); {multi: []} returns to the
             // single view. {multiDistance: tiles} sets the panes' view distance.
             const md = parseMultiDistance(d.multiDistance);
@@ -94,10 +97,15 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
             if (typeof d.multiFocus === "string" || Number.isInteger(d.multiFocus)) renderer.mapViewer.setMultiFocus(d.multiFocus);
             const live = renderer.mapViewer.live;
             if (typeof d.follow === "string" && live) {
-                if (live.followName?.toLowerCase() !== d.follow.toLowerCase()) live.pendingFollow = d.follow;
+                // The asked name, with the hidden-name mark resolved: a mark for the player already followed is no
+                // change. A follow of the current player also drops an older ask that is still waiting (an offline
+                // player), so that player's login later does not take the camera.
+                const asked = (resolveFollow(d.follow) ?? d.follow).toLowerCase();
+                if (live.followName?.toLowerCase() !== asked) live.pendingFollow = d.follow;
+                else live.pendingFollow = undefined;
             }
-            if (typeof d.fps === "number" && d.fps > 0) renderer.fpsLimit = d.fps;
-            if (typeof d.scale === "number" && d.scale > 0) renderer.resolutionScale = d.scale;
+            if (isFrameLimit(d.fps)) renderer.fpsLimit = d.fps;
+            if (isResolutionScale(d.scale)) renderer.resolutionScale = d.scale;
             // {overlay: {...}}: the highlights to draw (Markers.ts); each message replaces the ones before.
             if (d.overlay !== undefined) markers.setOverlay(d.overlay);
             // {capture: {id}}: the next frame as a JPEG, sent back as {viewerCapture: {id, url}} to the origin that asked.
@@ -116,32 +124,56 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
         return () => window.removeEventListener("message", onMessage);
     }, [renderer]);
 
+    // The React state changes only after the renderer draws a frame: with a frame limit (?fps=20) on a fast screen,
+    // most display frames draw nothing, and a state change on each of them re-rendered this tree for no new picture.
+    const shownFrame = useRef(-1);
+    const shownMenu = useRef("");
+
     const animate = (time: DOMHighResTimeStamp) => {
-        // Wait for 200ms before updating search params
-        if (
-            mapViewer.needsSearchParamUpdate &&
-            performance.now() - mapViewer.lastTimeSearchParamsUpdated > 200
-        ) {
-            setSearchParams(mapViewer.getSearchParams(), { replace: true });
-            mapViewer.needsSearchParamUpdate = false;
-            console.log("Updated search params");
+        // The address holds the camera and the followed name; an embedding page reads them from it. It is written
+        // 200 ms after the camera rests, and every 500 ms while it keeps moving: a followed player moves it every frame,
+        // so a wait for rest alone never wrote the address while following.
+        if (mapViewer.needsSearchParamUpdate) {
+            const now = performance.now();
+            if (
+                now - mapViewer.lastTimeSearchParamsUpdated > 200 ||
+                now - mapViewer.searchParamsWrittenAt > 500
+            ) {
+                setSearchParams(mapViewer.getSearchParams(), { replace: true });
+                mapViewer.needsSearchParamUpdate = false;
+                mapViewer.searchParamsWrittenAt = now;
+            }
         }
 
-        if (!hideUi) {
-            setMultiView(!!mapViewer.multi);
-            setFps(Math.round(renderer.stats.frameTimeFps));
-            setCameraYaw(mapViewer.camera.getYaw());
-        }
+        const frame = renderer.stats.frameCount;
+        if (frame !== shownFrame.current) {
+            shownFrame.current = frame;
+            if (!hideUi) {
+                setMultiView(!!mapViewer.multi);
+                setFps(Math.round(renderer.stats.frameTimeFps));
+                setCameraYaw(mapViewer.camera.getYaw());
+            }
 
-        if (mapViewer.menuEntries.length > 0 && mapViewer.menuX !== -1 && mapViewer.menuY !== -1) {
-            setMenuProps({
-                x: mapViewer.menuX,
-                y: mapViewer.menuY,
-                tooltip: !mapViewer.menuOpen,
-                entries: mapViewer.menuEntries,
-            });
-        } else {
-            setMenuProps(undefined);
+            const entries = mapViewer.menuEntries;
+            if (entries.length > 0 && mapViewer.menuX !== -1 && mapViewer.menuY !== -1) {
+                // The renderer builds a new list each frame: an unchanged menu keeps its props.
+                let key = `${mapViewer.menuX},${mapViewer.menuY},${mapViewer.menuOpen}`;
+                for (const e of entries) {
+                    key += `|${e.option}:${e.targetType}:${e.targetId}:${e.targetName}:${e.targetLevel}`;
+                }
+                if (key !== shownMenu.current) {
+                    shownMenu.current = key;
+                    setMenuProps({
+                        x: mapViewer.menuX,
+                        y: mapViewer.menuY,
+                        tooltip: !mapViewer.menuOpen,
+                        entries,
+                    });
+                }
+            } else if (shownMenu.current !== "") {
+                shownMenu.current = "";
+                setMenuProps(undefined);
+            }
         }
 
         requestRef.current = requestAnimationFrame(animate);

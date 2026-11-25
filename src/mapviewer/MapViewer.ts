@@ -97,6 +97,8 @@ export class MapViewer {
     // State
     needsSearchParamUpdate: boolean = false;
     lastTimeSearchParamsUpdated: number = 0;
+    // When the address was last written: while the camera keeps moving it is written at most every 500 ms.
+    searchParamsWrittenAt: number = 0;
 
     menuOpen: boolean = false;
     menuOpenedFrame: number = 0;
