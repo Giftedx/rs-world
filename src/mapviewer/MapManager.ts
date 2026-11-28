@@ -117,6 +117,8 @@ export class MapManager<T extends MapSquare> {
         this.invalidMapIds.clear();
         this.loadingMapIds.clear();
         this.pendingUploadIds.clear();
+        this.visibleMapCount = 0;
+        this.visibleMaps.length = 0;
         for (const map of this.mapSquares.values()) {
             map.delete();
         }
@@ -340,11 +342,8 @@ export class MapManager<T extends MapSquare> {
             }
         }
 
-        // Probably a better way to do this, maybe set null
-        if (this.visibleMapCount > this.visibleMaps.length) {
-            // Delete 1 per frame
-            this.visibleMaps.length -= 1;
-        }
+        // Truncate trailing slots so evicted or off-screen MapSquares are not retained.
+        this.visibleMaps.length = this.visibleMapCount;
 
         // Update the render bounds based on the map squares we are rendering.
         this.renderBounds[0] = mapStartX;

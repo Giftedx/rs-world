@@ -35,6 +35,7 @@ import {
 
 const MAX_PENDING_BAKES = 6;
 const MAX_INSTANCES = 4096;
+const MAX_FAILED_PAGES = 512;
 // Baked frames are cheap to rebuild, GPU memory isn't. Over budget, pages not drawn for a couple
 // of seconds are evicted (least recently drawn first).
 const MAX_PAGE_BYTES = 192 * 1024 * 1024;
@@ -129,6 +130,7 @@ export class LiveEntityRenderer {
     pages: Map<string, PageState> = new Map();
     pageBytes: number = 0;
     pendingBakes: number = 0;
+    private failedKeys: string[] = [];
 
     items: RenderItem[] = [];
     farLabels: FarPlayerLabel[] = [];
@@ -867,7 +869,7 @@ export class LiveEntityRenderer {
                     return;
                 }
                 if (!data || data.indices.length === 0) {
-                    this.pages.set(key, "failed");
+                    this.markFailed(key);
                     return;
                 }
                 this.pages.set(key, this.createPage(data));
@@ -877,12 +879,27 @@ export class LiveEntityRenderer {
                     return;
                 }
                 console.error("Failed baking live entity", key, e);
-                this.pages.set(key, "failed");
+                this.markFailed(key);
             })
             .finally(() => {
                 this.pendingBakes--;
             });
         return undefined;
+    }
+
+    private markFailed(key: string): void {
+        this.pages.set(key, "failed");
+        this.failedKeys.push(key);
+        if (this.failedKeys.length > MAX_FAILED_PAGES) {
+            const drop = this.failedKeys.length - MAX_FAILED_PAGES;
+            for (let i = 0; i < drop; i++) {
+                const oldKey = this.failedKeys[i];
+                if (this.pages.get(oldKey) === "failed") {
+                    this.pages.delete(oldKey);
+                }
+            }
+            this.failedKeys.splice(0, drop);
+        }
     }
 
     private createPage(data: EntityAnimData): EntityAnimPage {
@@ -1088,6 +1105,7 @@ export class LiveEntityRenderer {
             }
         }
         this.pages.clear();
+        this.failedKeys.length = 0;
         this.pageBytes = 0;
         this.dataTexture?.delete();
         this.dataTexture = undefined;
