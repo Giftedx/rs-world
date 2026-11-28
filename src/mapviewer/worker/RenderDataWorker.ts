@@ -161,15 +161,7 @@ async function initWorker(
             seqTypeLoader,
             modelLoader,
             textureLoader,
-            new NpcModelLoader(
-                npcTypeLoader,
-                modelLoader,
-                textureLoader,
-                seqTypeLoader,
-                seqFrameLoader,
-                skeletalSeqLoader,
-                varManager,
-            ),
+            npcModelLoader,
             locModelLoader,
             objModelLoader,
         );
@@ -267,10 +259,7 @@ const worker = {
             return undefined;
         }
         const data = loader.bake(request, workerState.textureIdIndexMap);
-        workerState.seqFrameLoader.clearCache();
-        if (loader.bodyCache.size > 512) {
-            loader.clearCache();
-        }
+        clearCache(workerState);
         return Transfer(data, [data.vertices.buffer, data.indices.buffer]);
     },
     async loadTexture(

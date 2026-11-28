@@ -582,5 +582,11 @@ export class WebGLMapSquare {
 
         this.modelInfoTextureInteractLod.delete();
         this.modelInfoTextureInteractLodAlpha.delete();
+
+        // Release CPU-side copies immediately so evicted squares drop backing typed arrays.
+        this.hiddenLocs.clear();
+        this.heightMapData = undefined;
+        this.locTable = undefined;
+        this.modelTextureDatas = undefined;
     }
 }

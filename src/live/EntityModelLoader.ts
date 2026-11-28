@@ -47,8 +47,20 @@ export type EntityAnimData = {
     frameHeights: Int16Array;
 };
 
+export const MAX_BODY_CACHE_ENTRIES = 256;
+
 export class EntityModelLoader {
     bodyCache: Map<string, Model | undefined> = new Map();
+
+    private cacheBody(key: string, model: Model | undefined): void {
+        this.bodyCache.delete(key);
+        this.bodyCache.set(key, model);
+        while (this.bodyCache.size > MAX_BODY_CACHE_ENTRIES) {
+            const oldest = this.bodyCache.keys().next().value;
+            if (oldest === undefined) break;
+            this.bodyCache.delete(oldest);
+        }
+    }
 
     constructor(
         readonly npcTypeLoader: NpcTypeLoader,
@@ -240,7 +252,7 @@ export class EntityModelLoader {
             model = merged.light(this.textureLoader, 64, 850, -30, -50, -30);
         }
 
-        this.bodyCache.set(key, model);
+        this.cacheBody(key, model);
         return model;
     }
 
@@ -312,7 +324,7 @@ export class EntityModelLoader {
                     -30,
                 );
             }
-            this.bodyCache.set(key, base);
+            this.cacheBody(key, base);
         }
         if (!base) {
             return undefined;
